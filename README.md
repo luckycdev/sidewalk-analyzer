@@ -47,3 +47,16 @@ Optional lookup tuning in `.env`:
 - Mapillary API needs access token.
 - Nominatim geocoding needs a friendly User-Agent and may rate limit heavy use.
 - App uses street geometry sampling because Mapillary radius search is small.
+
+## Pipeline CSV GPS manifest
+
+If you run the video pipeline (`python -m sidewalk_analyzer run ...` or `/pipeline`), you can optionally provide a CSV manifest alongside the MP4 containing per-frame metadata.
+
+Expected columns (names are matched flexibly; exact names don’t matter):
+
+- `filename` (or frame number)
+- `image_id`
+- `latitude`
+- `longitude`
+- `captured_at`
+- `angle` (compass bearing degrees 0–360)

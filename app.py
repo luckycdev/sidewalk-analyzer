@@ -6,13 +6,15 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import requests
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 
 
 USER_AGENT = "sidewalk-analyzer/1.0 (local flask app)"
@@ -41,6 +43,9 @@ load_dotenv_file(Path(__file__).with_name(".env"))
 
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+
+PIPELINE_RUNS: dict[str, dict[str, Any]] = {}
+PIPELINE_LOCK = threading.Lock()
 
 
 def fetch_json(url: str, *, params: dict[str, Any], headers: dict[str, str] | None = None) -> Any:
@@ -557,6 +562,92 @@ def enrich_images_with_sidewalk_gers(images: list[dict[str, Any]]) -> tuple[list
 def index() -> str:
     return render_template("index.html")
 
+
+@app.get("/pipeline")
+def pipeline_page() -> str:
+    mapbox_token = os.getenv("MAPBOX_ACCESS_TOKEN", "").strip()
+    return render_template("pipeline.html", mapbox_token=mapbox_token)
+
+
+def _run_pipeline_job(run_id: str, *, video_path: str, csv_path: str | None, out_dir: str) -> None:
+    try:
+        from sidewalk_analyzer.config import load_settings
+        from sidewalk_analyzer.pipeline import run_pipeline
+
+        settings = load_settings(env_path=Path(__file__).with_name(".env"))
+        manifest = run_pipeline(
+            video_path=Path(video_path),
+            csv_path=Path(csv_path) if csv_path else None,
+            out_dir=Path(out_dir),
+            run_id=run_id,
+            settings=settings,
+            no_s3=False,
+            skip_marengo=False,
+            threshold_override=None,
+        )
+        with PIPELINE_LOCK:
+            PIPELINE_RUNS[run_id]["status"] = "completed"
+            PIPELINE_RUNS[run_id]["manifest"] = manifest
+    except Exception as exc:
+        with PIPELINE_LOCK:
+            PIPELINE_RUNS[run_id]["status"] = "error"
+            PIPELINE_RUNS[run_id]["error"] = str(exc)
+
+
+@app.post("/api/pipeline/run")
+def api_pipeline_run():
+    payload = request.get_json(silent=True) or {}
+    video_path = str(payload.get("video_path") or "").strip()
+    csv_path = str(payload.get("csv_path") or "").strip() or None
+    out_dir = str(payload.get("out_dir") or "outputs").strip()
+    if not video_path:
+        return jsonify({"error": "video_path required"}), 400
+
+    run_id = payload.get("run_id") or uuid.uuid4().hex[:12]
+    with PIPELINE_LOCK:
+        PIPELINE_RUNS[run_id] = {"status": "running", "created_at": datetime.now(tz=timezone.utc).isoformat()}
+
+    thread = threading.Thread(
+        target=_run_pipeline_job,
+        kwargs={"run_id": run_id, "video_path": video_path, "csv_path": csv_path, "out_dir": out_dir},
+        daemon=True,
+    )
+    thread.start()
+    return jsonify({"run_id": run_id, "status": "running"})
+
+
+@app.get("/api/pipeline/status/<run_id>")
+def api_pipeline_status(run_id: str):
+    with PIPELINE_LOCK:
+        run = PIPELINE_RUNS.get(run_id)
+    if not run:
+        return jsonify({"error": "run not found"}), 404
+    return jsonify({"run_id": run_id, **run})
+
+
+@app.get("/api/pipeline/result/<run_id>")
+def api_pipeline_result(run_id: str):
+    with PIPELINE_LOCK:
+        run = PIPELINE_RUNS.get(run_id)
+    if not run:
+        return jsonify({"error": "run not found"}), 404
+    if run.get("status") != "completed":
+        return jsonify({"error": "run not completed", "status": run.get("status")}), 409
+    return jsonify(run.get("manifest") or {})
+
+
+@app.get("/api/pipeline/geojson/<run_id>")
+def api_pipeline_geojson(run_id: str):
+    with PIPELINE_LOCK:
+        run = PIPELINE_RUNS.get(run_id)
+    if not run or run.get("status") != "completed":
+        return jsonify({"error": "run not completed"}), 404
+    manifest = run.get("manifest") or {}
+    outputs = manifest.get("outputs") or {}
+    geojson_path = outputs.get("geojson")
+    if not geojson_path:
+        return jsonify({"error": "geojson not available"}), 404
+    return send_file(geojson_path, mimetype="application/geo+json")
 
 @app.post("/api/search")
 def api_search():
