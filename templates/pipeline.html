@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sidewalk Analyzer Pipeline</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.5.1/mapbox-gl.css" rel="stylesheet">
+  <style>
+    .map-shell { display: grid; gap: 16px; grid-template-columns: 360px 1fr; align-items: start; }
+    #map { width: 100%; height: 70vh; border-radius: 16px; overflow: hidden; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .small { font-size: 12px; opacity: 0.8; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow">TwelveLabs on Bedrock</div>
+        <h1>Video → GeoParquet sidewalk inventory</h1>
+        <p>Run the pipeline, then explore segments on the map and click to inspect attributes and evidence.</p>
+      </div>
+      <div class="hero-panel">
+        <div class="hero-panel-title">Inputs</div>
+        <ul>
+          <li>Local MP4 path (for now)</li>
+          <li>S3 bucket via <span class="mono">.env</span></li>
+          <li>Mapbox token via <span class="mono">MAPBOX_ACCESS_TOKEN</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <main class="map-shell">
+      <aside class="controls card">
+        <div class="card-head">
+          <h2>Run</h2>
+          <p class="small">This starts a background job in the Flask process.</p>
+        </div>
+
+        <form id="pipeline-form" class="form">
+          <label>
+            <span>Video path (.mp4)</span>
+            <input id="video_path" name="video_path" type="text" placeholder="/path/to/video.mp4" autocomplete="off">
+          </label>
+          <label>
+            <span>CSV manifest (optional)</span>
+            <input id="csv_path" name="csv_path" type="text" placeholder="/path/to/metadata.csv" autocomplete="off">
+          </label>
+          <label>
+            <span>Output directory</span>
+            <input id="out_dir" name="out_dir" type="text" value="outputs" autocomplete="off">
+          </label>
+          <button class="button" type="submit">
+            <span class="button-dot"></span>
+            Run pipeline
+          </button>
+        </form>
+
+        <div id="pipeline-message" class="hint"></div>
+        <div class="hint small">Run ID: <span id="run-id" class="mono">-</span></div>
+        <div class="hint small">Status: <span id="run-status" class="mono">Idle</span></div>
+        <div class="hint small">GeoJSON: <span id="geojson-link" class="mono">-</span></div>
+      </aside>
+
+      <section class="results card">
+        <div class="section-head">
+          <h2>Map</h2>
+          <p class="small">Segments are color-coded by <span class="mono">surface_condition</span>.</p>
+        </div>
+        <div id="map"></div>
+        <div id="feature-panel" class="hint"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.5.1/mapbox-gl.js"></script>
+  <script>
+    window.__MAPBOX_TOKEN__ = {{ mapbox_token|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='pipeline.js') }}"></script>
+</body>
+</html>
+
