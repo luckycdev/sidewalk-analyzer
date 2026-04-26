@@ -201,13 +201,22 @@
 
       // Add points to map
       if (map) {
-        // Clear existing markers
-        if (map.getLayer('frames')) {
-          map.removeLayer('frames');
-          map.removeSource('frames');
-        }
+        // Clear existing layers/sources (remove layer before source).
+        const removeIfPresent = (layerId, sourceId) => {
+          if (map.getLayer(layerId)) map.removeLayer(layerId);
+          if (map.getSource(sourceId)) map.removeSource(sourceId);
+        };
 
-        const features = data.map(row => ({
+        removeIfPresent('frames', 'frames');
+        removeIfPresent('gers-run-lines', 'gers-run-lines');
+        removeIfPresent('route-line', 'route-line');
+        removeIfPresent('overture-gers-lines', 'overture-gers-lines');
+
+        const rows = Array.isArray(data)
+          ? [...data].sort((a, b) => Number(a.frame) - Number(b.frame))
+          : [];
+
+        const features = rows.map(row => ({
           type: 'Feature',
           geometry: {
             type: 'Point',
@@ -220,11 +229,102 @@
           }
         }));
 
+        // Full path line (always visible when >= 2 valid points).
+        const routeCoords = [];
+        for (const row of rows) {
+          const lon = Number(row.lon);
+          const lat = Number(row.lat);
+          if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+          routeCoords.push([lon, lat]);
+        }
+        const routeLineFeatures =
+          routeCoords.length >= 2
+            ? [{ type: 'Feature', geometry: { type: 'LineString', coordinates: routeCoords }, properties: {} }]
+            : [];
+
+        // GERS "run" lines: connect consecutive frames where the matched GERS id is identical.
+        // (Not the true Overture geometry — just a polyline along the GPS trace.)
+        const gersRunFeatures = [];
+        let currentGers = null;
+        let currentCoords = [];
+
+        function flushGersRun() {
+          if (!currentGers || currentCoords.length < 2) {
+            currentCoords = [];
+            return;
+          }
+          gersRunFeatures.push({
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: currentCoords },
+            properties: { gers_id: currentGers }
+          });
+          currentCoords = [];
+        }
+
+        for (const row of rows) {
+          const gers = (row.gers_id || '').toString();
+          const lon = Number(row.lon);
+          const lat = Number(row.lat);
+          if (!Number.isFinite(lon) || !Number.isFinite(lat) || !gers) {
+            flushGersRun();
+            currentGers = null;
+            continue;
+          }
+          if (currentGers === null) {
+            currentGers = gers;
+            currentCoords = [[lon, lat]];
+            continue;
+          }
+          if (gers !== currentGers) {
+            flushGersRun();
+            currentGers = gers;
+            currentCoords = [[lon, lat]];
+            continue;
+          }
+          currentCoords.push([lon, lat]);
+        }
+        flushGersRun();
+
+        map.addSource('route-line', {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: routeLineFeatures }
+        });
+
+        map.addSource('gers-run-lines', {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: gersRunFeatures }
+        });
+
         map.addSource('frames', {
           type: 'geojson',
           data: {
             type: 'FeatureCollection',
             features: features
+          }
+        });
+
+        // Bottom -> top: route outline, GERS runs, points.
+        map.addLayer({
+          id: 'route-line',
+          type: 'line',
+          source: 'route-line',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#9e9e9e',
+            'line-width': 2,
+            'line-opacity': 0.35
+          }
+        });
+
+        map.addLayer({
+          id: 'gers-run-lines',
+          type: 'line',
+          source: 'gers-run-lines',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-width': 4,
+            'line-opacity': 0.75,
+            'line-color': '#1976d2'
           }
         });
 
@@ -250,6 +350,24 @@
           bounds.extend(feature.geometry.coordinates);
         });
         map.fitBounds(bounds, { padding: 20 });
+
+        // Overlay true Overture geometries for matched GERS ids (thick blue lines).
+        // This fetch is best-effort; it won't block rendering the dots.
+        fetch(`/api/gers-geojson/${encodeURIComponent(currentRunId)}`)
+          .then(resp => resp.ok ? resp.json() : null)
+          .then(fc => {
+            if (!fc || !fc.features || fc.features.length === 0) return;
+            removeIfPresent('overture-gers-lines', 'overture-gers-lines');
+            map.addSource('overture-gers-lines', { type: 'geojson', data: fc });
+            map.addLayer({
+              id: 'overture-gers-lines',
+              type: 'line',
+              source: 'overture-gers-lines',
+              layout: { 'line-join': 'round', 'line-cap': 'round' },
+              paint: { 'line-color': '#0d47a1', 'line-width': 8, 'line-opacity': 0.55 }
+            });
+          })
+          .catch(() => {});
       }
 
       // Display CSV table

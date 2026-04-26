@@ -19,6 +19,12 @@ import pandas as pd
 import requests
 from flask import Flask, jsonify, render_template, request, send_file
 
+# Optional: only used when exporting Overture geometries as GeoJSON
+try:
+    from shapely.geometry import mapping as shapely_mapping  # type: ignore
+except Exception:  # pragma: no cover
+    shapely_mapping = None
+
 
 USER_AGENT = "sidewalk-analyzer/1.0 (local flask app)"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
@@ -59,7 +65,7 @@ BUCKET_OWNER = os.getenv("AWS_BUCKET_OWNER", "564203970240")
 s3 = boto3.client("s3", region_name=REGION)
 bedrock = boto3.client("bedrock-runtime", region_name=REGION)
 
-# Tuning knobs (env-overridable; aligned with `aws_test.py`)
+# Pegasus tuning knobs (ported from `app_copyy.py` / `aws_test.py`)
 MIN_SEGMENT_CONFIDENCE = float(os.getenv("MIN_SEGMENT_CONFIDENCE", "0.7"))
 VERIFY_SEGMENTS = os.getenv("VERIFY_SEGMENTS", "1").strip().lower() not in {"0", "false", "no"}
 VERIFY_MIN_HITS = int(os.getenv("VERIFY_MIN_HITS", "2"))  # out of 3 (start/mid/end)
@@ -304,197 +310,6 @@ Checks:
             kept.append(det)
 
     return kept
-
-
-def _load_overture_segments_for_csv(df: pd.DataFrame):
-    """
-    Loads Overture 'segment' features for a bbox around the GPS trace.
-    Returns (metric_gdf, sidewalk_mask) where geometries are projected to meters (EPSG:3857),
-    or (None, None) if overture/geopandas not available.
-    """
-    try:
-        import overturemaps  # type: ignore
-        import geopandas as gpd  # type: ignore
-    except Exception:
-        return None, None
-
-    if "lat" not in df.columns or "long" not in df.columns:
-        return None, None
-
-    # Use degree padding (fast and consistent with `aws_test.py`).
-    bbox_padding_deg = float(os.getenv("OVERTURE_BBOX_PADDING_DEG", "0.001"))
-    min_lon = float(df["long"].min()) - bbox_padding_deg
-    min_lat = float(df["lat"].min()) - bbox_padding_deg
-    max_lon = float(df["long"].max()) + bbox_padding_deg
-    max_lat = float(df["lat"].max()) + bbox_padding_deg
-    bbox = (min_lon, min_lat, max_lon, max_lat)
-
-    table = overturemaps.record_batch_reader("segment", bbox).read_all()
-    # geopandas versions vary; from_arrow is not always available
-    if hasattr(gpd.GeoDataFrame, "from_arrow"):
-        gdf = gpd.GeoDataFrame.from_arrow(table)
-    else:
-        pdf = table.to_pandas()
-        if "geometry" not in pdf.columns:
-            return None, None
-
-        geometry = pdf["geometry"]
-        # If geometry is WKB bytes, decode to shapely
-        try:
-            from shapely import from_wkb  # type: ignore[attr-defined]
-
-            if len(geometry) > 0 and isinstance(geometry.iloc[0], (bytes, bytearray, memoryview)):
-                geometry = geometry.apply(lambda v: None if v is None else from_wkb(bytes(v)))
-        except Exception:
-            try:
-                import shapely.wkb  # type: ignore
-
-                if len(geometry) > 0 and isinstance(geometry.iloc[0], (bytes, bytearray, memoryview)):
-                    geometry = geometry.apply(lambda v: None if v is None else shapely.wkb.loads(bytes(v)))
-            except Exception:
-                pass
-
-        gdf = gpd.GeoDataFrame(pdf, geometry=geometry)
-
-    if gdf.empty or "geometry" not in gdf.columns:
-        return None, None
-
-    # Overture geometries are lon/lat; ensure CRS then project to a meters CRS for accurate distances.
-    try:
-        gdf = gdf.set_crs("EPSG:4326", allow_override=True)
-        metric_gdf = gdf.to_crs("EPSG:3857")
-    except Exception:
-        return None, None
-
-    # Sidewalk-like classification: be resilient to schema variation by searching multiple fields.
-    sidewalk_keywords = ("sidewalk", "footway", "pedestrian", "path", "crossing", "steps")
-    text_fields = [col for col in ("subclass", "subtype", "class", "subclass_rules", "names") if col in metric_gdf.columns]
-    if not text_fields:
-        sidewalk_mask = pd.Series([False] * len(metric_gdf), index=metric_gdf.index)
-    else:
-        combined = metric_gdf[text_fields].astype(str).agg(" ".join, axis=1).str.lower()
-        sidewalk_mask = combined.apply(lambda value: any(keyword in value for keyword in sidewalk_keywords))
-
-    return metric_gdf, sidewalk_mask
-
-
-def _nearest_overture_segment(point_lon: float, point_lat: float, gdf, sidewalk_mask):
-    """
-    Returns (gers_id, subclass_value, distance_m) for best match.
-    Prefers sidewalk-like segments within OVERTURE_MAX_MATCH_M, else falls back to nearest segment overall.
-    """
-    try:
-        from shapely.geometry import Point  # type: ignore
-        from shapely.strtree import STRtree  # type: ignore
-    except Exception:
-        return None, None, None
-
-    if gdf is None or sidewalk_mask is None or getattr(gdf, "empty", True):
-        return None, None, None
-
-    try:
-        import geopandas as gpd  # type: ignore
-    except Exception:
-        return None, None, None
-
-    point_gdf = gpd.GeoSeries([Point(float(point_lon), float(point_lat))], crs="EPSG:4326").to_crs("EPSG:3857")
-    p = point_gdf.iloc[0]
-
-    geoms = list(gdf.geometry.values)
-    if not geoms:
-        return None, None, None
-
-    tree = STRtree(geoms)
-    geom_to_index = {id(geom): idx for idx, geom in zip(gdf.index, geoms)}
-
-    def _as_geoms(items) -> list[Any]:
-        normalized: list[Any] = []
-        for item in items:
-            if isinstance(item, (int,)) or str(type(item)).endswith("numpy.int64'>") or str(type(item)).endswith("numpy.int32'>"):
-                try:
-                    normalized.append(geoms[int(item)])
-                except Exception:
-                    continue
-            else:
-                normalized.append(item)
-        return normalized
-
-    def pick_best(geometry_list) -> tuple[Any, float] | tuple[None, float]:
-        best_idx = None
-        best_dist = float("inf")
-        for geom in geometry_list:
-            if not hasattr(geom, "distance"):
-                continue
-            dist = float(geom.distance(p))
-            if dist < best_dist:
-                best_dist = dist
-                best_idx = geom_to_index.get(id(geom))
-        return best_idx, best_dist
-
-    max_m = float(os.getenv("OVERTURE_MAX_MATCH_M", "25"))
-
-    # 1) Prefer sidewalk-like segments within max_m.
-    sidewalk_candidates_geoms: list[Any] = []
-    try:
-        near_geoms = _as_geoms(list(tree.query(p.buffer(max_m))))
-        if near_geoms:
-            for geom in near_geoms:
-                idx = geom_to_index.get(id(geom))
-                if idx is None:
-                    continue
-                if bool(sidewalk_mask.loc[idx]):
-                    sidewalk_candidates_geoms.append(geom)
-    except Exception:
-        sidewalk_candidates_geoms = []
-
-    if sidewalk_candidates_geoms:
-        idx, distance_m = pick_best(sidewalk_candidates_geoms)
-    else:
-        # 2) Otherwise pick nearest overall.
-        idx = None
-        distance_m = float("inf")
-        if hasattr(tree, "nearest"):
-            try:
-                nearest_geom = tree.nearest(p)
-                nearest_geom = _as_geoms([nearest_geom])[0] if nearest_geom is not None else None
-                if nearest_geom is not None and hasattr(nearest_geom, "distance"):
-                    idx = geom_to_index.get(id(nearest_geom))
-                    if idx is not None:
-                        distance_m = float(nearest_geom.distance(p))
-            except Exception:
-                idx = None
-
-        if idx is None:
-            # Fallback: expand search until we get candidates.
-            for radius in (50.0, 100.0, 200.0, 500.0, 1000.0):
-                try:
-                    cand = _as_geoms(list(tree.query(p.buffer(radius))))
-                except Exception:
-                    cand = []
-                if not cand:
-                    continue
-                idx, distance_m = pick_best(cand)
-                if idx is not None:
-                    break
-
-    if idx is None:
-        return None, None, None
-
-    best = gdf.loc[idx]
-    gers_id = None
-    if "id" in getattr(best, "index", []) or (hasattr(best, "get") and best.get("id") is not None):
-        try:
-            gers_id = str(best.get("id"))
-        except Exception:
-            gers_id = None
-
-    subclass_value = None
-    for candidate in ("subclass", "subtype", "class"):
-        if hasattr(best, "get") and best.get(candidate) is not None:
-            subclass_value = str(best.get(candidate))
-            break
-
-    return gers_id, subclass_value, round(float(distance_m), 2)
 
 
 def fetch_json(url: str, *, params: dict[str, Any], headers: dict[str, str] | None = None) -> Any:
@@ -1016,7 +831,7 @@ def _run_analysis_job(run_id: str, video_path: str) -> None:
         s3.upload_file(video_path, BUCKET_NAME, s3_key)
         s3_uri = f"s3://{BUCKET_NAME}/{s3_key}"
 
-        # Step 2: Detect segments (prompt + extract + merge + verify), aligned with `aws_test.py`.
+        # Step 2: Detect segments (improved prompt + verification from `app_copyy.py`).
         result = _bedrock_pegasus_invoke(PEGASUS_PROMPT, s3_uri=s3_uri)
         raw_message = result.get("message", "")
         segments = _extract_json_array(raw_message)
@@ -1026,89 +841,123 @@ def _run_analysis_job(run_id: str, video_path: str) -> None:
         if VERIFY_SEGMENTS and segments:
             segments = verify_segments(segments, s3_uri=s3_uri)
 
-        # Expand segments to per-frame issues (one best issue per frame).
+        # Expand segments to per-frame issue strings (keep one best segment per frame).
         severity_rank = {"low": 0, "medium": 1, "high": 2}
-        issues_by_frame: dict[int, dict[str, Any]] = {}
+        best_by_frame: dict[int, dict[str, Any]] = {}
         for seg in segments:
             start = int(seg["start"])
             end = int(seg["end"])
             for t in range(start, end + 1):
                 if t < 0:
                     continue
-                existing = issues_by_frame.get(t)
+                existing = best_by_frame.get(t)
                 if existing is None:
-                    issues_by_frame[t] = seg
+                    best_by_frame[t] = seg
                     continue
                 a = severity_rank.get(str(seg.get("severity")), 1)
                 b = severity_rank.get(str(existing.get("severity")), 1)
                 if a > b:
-                    issues_by_frame[t] = seg
+                    best_by_frame[t] = seg
                     continue
                 if a == b and float(seg.get("confidence") or 0.0) > float(existing.get("confidence") or 0.0):
-                    issues_by_frame[t] = seg
+                    best_by_frame[t] = seg
 
         # Step 5: Load CSV
         csv_path = os.path.join("csvs", f"{sequence_id}.csv")
         df = pd.read_csv(csv_path)
 
-        # Step 6: Load Overture segments (robust across GeoPandas/Shapely versions).
-        overture_gdf, overture_sidewalk_mask = _load_overture_segments_for_csv(df)
+        # Step 6: Download Overture data
+        import overturemaps
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        bbox = (
+            df['long'].min() - 0.001,
+            df['lat'].min() - 0.001,
+            df['long'].max() + 0.001,
+            df['lat'].max() + 0.001
+        )
+
+        table = overturemaps.record_batch_reader("segment", bbox).read_all()
+        # GeoPandas API mismatch: some versions don't ship GeoDataFrame.from_arrow()
+        if hasattr(gpd.GeoDataFrame, "from_arrow"):
+            gdf = gpd.GeoDataFrame.from_arrow(table)
+        else:
+            pdf = table.to_pandas()
+            geometry = pdf.get("geometry")
+            if geometry is not None:
+                # If geometry is WKB bytes, decode to shapely geometries.
+                if len(geometry) > 0 and isinstance(geometry.iloc[0], (bytes, bytearray, memoryview)):
+                    try:
+                        from shapely import from_wkb  # type: ignore[attr-defined]
+
+                        geometry = geometry.apply(lambda v: None if v is None else from_wkb(bytes(v)))
+                    except Exception:
+                        import shapely.wkb  # type: ignore
+
+                        geometry = geometry.apply(lambda v: None if v is None else shapely.wkb.loads(bytes(v)))
+                gdf = gpd.GeoDataFrame(pdf, geometry=geometry)
+            else:
+                gdf = gpd.GeoDataFrame(pdf)
+
+        sidewalk_keys = {'sidewalk', 'footway', 'pedestrian', 'path'}
+
+        # Step 7: Build results (preserve existing output shape: `issues` string per frame).
+        frame_issues = {i: [] for i in range(len(df))}
+        for t, seg in best_by_frame.items():
+            if 0 <= int(t) < len(df):
+                desc = f"{seg.get('severity', '')}: {seg.get('description', '')}".strip(": ")
+                if desc:
+                    frame_issues[int(t)].append(desc)
 
         rows = []
+        # Export unique matched Overture geometries so the UI can draw the true GERS lines.
+        gers_feature_map: dict[str, dict[str, Any]] = {}
         for i in range(len(df)):
             row = df.iloc[i]
-            # Prefer sidewalk-like segments within threshold, else nearest overall.
-            gers_id, gers_subclass, gers_distance_m = (None, None, None)
-            if overture_gdf is not None:
-                gers_id, gers_subclass, gers_distance_m = _nearest_overture_segment(
-                    point_lon=float(row["long"]),
-                    point_lat=float(row["lat"]),
-                    gdf=overture_gdf,
-                    sidewalk_mask=overture_sidewalk_mask,
-                )
+            p = Point(row["long"], row["lat"])
 
-            seg = issues_by_frame.get(i)
-            if seg is None:
-                has_issue = 0
-                severity = ""
-                confidence = ""
-                damage_types = ""
-                description = ""
-                issues = ""
+            gdf["dist"] = gdf.geometry.distance(p)
+            is_sidewalk = gdf["subclass"].isin(sidewalk_keys)
+            sidewalks = gdf[is_sidewalk & (gdf["dist"] < 0.00015)]
+
+            if not sidewalks.empty:
+                best = sidewalks.loc[sidewalks["dist"].idxmin()]
             else:
-                has_issue = 1
-                severity = str(seg.get("severity") or "")
-                conf_val = seg.get("confidence")
-                confidence = "" if conf_val is None else str(conf_val)
-                dt = seg.get("damage_types") or []
-                if isinstance(dt, list):
-                    damage_types = "|".join(str(x) for x in dt)
-                else:
-                    damage_types = str(dt)
-                description = str(seg.get("description") or "")
-                issues = f"{severity}: {description}".strip(": ")
+                best = gdf.loc[gdf["dist"].idxmin()]
+
+            issues = " | ".join(frame_issues[i]) if frame_issues[i] else ""
+            gers_id = str(best.get("id") or "")
+
+            if gers_id and gers_id not in gers_feature_map and shapely_mapping is not None:
+                geom = getattr(best, "geometry", None)
+                if geom is not None:
+                    try:
+                        gers_feature_map[gers_id] = {
+                            "type": "Feature",
+                            "geometry": shapely_mapping(geom),
+                            "properties": {"gers_id": gers_id},
+                        }
+                    except Exception:
+                        # If mapping fails for any geometry, just skip exporting it.
+                        pass
 
             rows.append({
                 "frame": i,
                 "lat": row["lat"],
                 "lon": row["long"],
-                "gers_id": gers_id or "",
-                "gers_subclass": gers_subclass or "",
-                "gers_distance_m": "" if gers_distance_m is None else gers_distance_m,
-                "segment_type": gers_subclass or "",
-                "has_issue": has_issue,
-                "severity": severity,
-                "confidence": confidence,
-                "damage_types": damage_types,
-                "description": description,
-                "issues": issues,
+                "gers_id": gers_id,
+                "segment_type": best.get("subclass", ""),
+                "issues": issues
             })
 
         results = rows
+        gers_geojson = {"type": "FeatureCollection", "features": list(gers_feature_map.values())}
 
         with PIPELINE_LOCK:
             PIPELINE_RUNS[run_id]["status"] = "completed"
             PIPELINE_RUNS[run_id]["results"] = results
+            PIPELINE_RUNS[run_id]["gers_geojson"] = gers_geojson
 
     except Exception as exc:
         with PIPELINE_LOCK:
@@ -1160,6 +1009,62 @@ def api_results(run_id: str):
     if run.get("status") != "completed":
         return jsonify({"error": "run not completed", "status": run.get("status")}), 409
     return jsonify(run.get("results") or [])
+
+
+@app.get("/api/gers-geojson/<run_id>")
+def api_gers_geojson(run_id: str):
+    with PIPELINE_LOCK:
+        run = PIPELINE_RUNS.get(run_id)
+    if not run:
+        return jsonify({"error": "run not found"}), 404
+    if run.get("status") != "completed":
+        return jsonify({"error": "run not completed", "status": run.get("status")}), 409
+    return jsonify(run.get("gers_geojson") or {"type": "FeatureCollection", "features": []})
+
+
+@app.get("/api/overture-sidewalks")
+def api_overture_sidewalks():
+    try:
+        left = float(request.args.get("left"))
+        bottom = float(request.args.get("bottom"))
+        right = float(request.args.get("right"))
+        top = float(request.args.get("top"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid bounds"}), 400
+
+    try:
+        features = run_overture_download((left, bottom, right, top))
+        sidewalk_features = [f for f in features if is_sidewalk_segment(f)]
+        geojson = {
+            "type": "FeatureCollection",
+            "features": sidewalk_features
+        }
+        return jsonify(geojson)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.get("/api/csv-files")
+def api_csv_files():
+    csv_files = [f for f in os.listdir('.') if f.startswith('results_') and f.endswith('.csv')]
+    return jsonify({"csv_files": csv_files})
+
+
+@app.get("/api/load-csv/<filename>")
+def api_load_csv(filename):
+    if not filename.startswith('results_') or not filename.endswith('.csv'):
+        return jsonify({"error": "Invalid filename"}), 400
+    
+    try:
+        df = pd.read_csv(filename)
+        # Replace NaN with empty strings for JSON compatibility
+        df = df.fillna('')
+        data = df.to_dict('records')
+        return jsonify({"data": data})
+    except Exception as exc:
+        return jsonify({"data": data})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.get("/")
