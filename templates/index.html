@@ -416,15 +416,14 @@
 
     function displayResults(data) {
       const rowsAll = Array.isArray(data) ? data : [];
+      const summaryRows = buildGersSummary(rowsAll);
 
       // High-level narrative: one bullet per GERS segment that has any issue.
       const gersWithIssues = new Map();
-      for (const row of rowsAll) {
-        const gid = (row.gers_id || '').toString().trim();
-        if (!gid) continue;
-        const issueText = (row.issues || '').toString().trim();
-        const isManualFlag = gid === '796f6f15-aef7-4b33-b733-5710d91497e1';
-        if (!issueText && !isManualFlag) continue;
+      for (const seg of summaryRows) {
+        const gid = (seg.gers_id || '').toString().trim();
+        if (!gid || gid === '(none)') continue;
+        if (Number(seg.issue_frames) <= 0) continue;
         if (!gersWithIssues.has(gid)) gersWithIssues.set(gid, sidewalkCrackDetectedNarrative(gid));
       }
       if (gersWithIssues.size > 0) {
@@ -454,26 +453,46 @@
 
       // Display issues
       issuesList.innerHTML = '';
-      const issues = rowsAll.filter(row => row.issues && row.issues.trim());
-      if (issues.length === 0) {
+      // Issues list should match the segment-level detection summary.
+      // Render one issue card per flagged GERS segment (not per-frame spam).
+      const issueSegments = summaryRows.filter(s => Number(s.issue_frames) > 0 && (s.gers_id || '').toString().trim() && s.gers_id !== '(none)');
+
+      if (issueSegments.length === 0) {
         issuesList.innerHTML = '<p>No issues found.</p>';
       } else {
-        issues.forEach(issue => {
+        for (const seg of issueSegments) {
+          const gid = (seg.gers_id || '').toString().trim();
+          const matching = rowsAll
+            .filter(r => (r.gers_id || '').toString().trim() === gid)
+            .slice()
+            .sort((a, b) => Number(a.frame) - Number(b.frame));
+
+          const first = matching.length ? matching[0] : null;
+          const frameLabel = first && first.frame !== undefined ? `Frame ${first.frame}` : 'Frame (unknown)';
+          const lat = first ? Number(first.lat) : NaN;
+          const lon = first ? Number(first.lon) : NaN;
+          const locHtml = Number.isFinite(lat) && Number.isFinite(lon)
+            ? `Location: ${lat.toFixed(6)}, ${lon.toFixed(6)}<br>`
+            : '';
+
+          const descs = Array.from(seg.issue_texts || []);
+          const issueText = descs.length ? descs.join(' • ') : 'Sidewalk crack / surface damage detected';
+
           const div = document.createElement('div');
           div.className = 'issue-item';
-          const narrative = sidewalkCrackDetectedNarrative(issue.gers_id);
+          const narrative = sidewalkCrackDetectedNarrative(gid);
           const narrHtml = narrative
-            ? `<div class="gers-narrative">${escapeHtml(narrative)} Full GERS: <span class="mono">${escapeHtml((issue.gers_id || '').toString())}</span>.</div>`
+            ? `<div class="gers-narrative">${escapeHtml(narrative)} Full GERS: <span class="mono">${escapeHtml(gid)}</span>.</div>`
             : '';
           div.innerHTML = `
-            <strong>Frame ${issue.frame}</strong><br>
-            Location: ${issue.lat.toFixed(6)}, ${issue.lon.toFixed(6)}<br>
-            GERS ID: <span class="mono">${escapeHtml((issue.gers_id || '').toString())}</span><br>
-            Issues: ${escapeHtml((issue.issues || '').toString())}
+            <strong>${escapeHtml(frameLabel)}</strong><br>
+            ${locHtml}
+            GERS ID: <span class="mono">${escapeHtml(gid)}</span><br>
+            Issues: ${escapeHtml(issueText)}
             ${narrHtml}
           `;
           issuesList.appendChild(div);
-        });
+        }
       }
 
       // Add points to map
@@ -499,9 +518,9 @@
           },
           properties: {
             frame: row.frame,
-            issues: row.issues || '',
+            issues: ((row.issues || '').toString()).trim(),
             gers_id: row.gers_id,
-            has_issue: row.has_issue
+            has_issue: Number(row.has_issue) === 1 ? 1 : 0
           }
         }));
 
@@ -646,14 +665,29 @@
           .then(resp => resp.ok ? resp.json() : null)
           .then(fc => {
             if (!fc || !fc.features || fc.features.length === 0) return;
-            const gersWithIssues = new Set();
-            for (const r of rows) {
-              const has = (r.issues || '').toString().trim().length > 0 || Number(r.has_issue) === 1;
-              const gid = (r.gers_id || '').toString().trim();
-              const isManualFlag = gid === '796f6f15-aef7-4b33-b733-5710d91497e1';
-              if ((!has && !isManualFlag) || !gid) continue;
-              gersWithIssues.add(gid);
+            const gersWithIssues = new Set(
+              summaryRows
+                .filter(s => Number(s.issue_frames) > 0)
+                .map(s => (s.gers_id || '').toString().trim())
+                .filter(g => g && g !== '(none)')
+            );
+
+            // Keep frame dots consistent with segment styling:
+            // if a GERS segment is flagged as having issues, mark all its frame dots as issues too.
+            for (const feat of features) {
+              const gid = ((feat.properties || {}).gers_id || '').toString().trim();
+              if (!gid) continue;
+              if (gersWithIssues.has(gid)) {
+                feat.properties.has_issue = 1;
+              }
             }
+            try {
+              const framesSrc = map.getSource('frames');
+              if (framesSrc && framesSrc.setData) {
+                framesSrc.setData({ type: 'FeatureCollection', features: features });
+              }
+            } catch (e) {}
+
             for (const f of fc.features || []) {
               const p = f.properties || (f.properties = {});
               const gid = (p.gers_id || '').toString().trim();
@@ -686,7 +720,6 @@
           .catch(() => {});
       }
 
-      const summaryRows = buildGersSummary(rowsAll);
       gersSummaryTable.innerHTML = '';
       const table = document.createElement('table');
       table.className = 'summary-table';

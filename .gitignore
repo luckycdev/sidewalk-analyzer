@@ -1,4 +1,12 @@
 .env
-__pycache__
+__pycache__/
+*.pyc
 .venv/
 .venv
+
+# Local media and outputs
+*.mp4
+results_*.csv
+results_*.json
+results_*.geojson
+sidewalk_results.json

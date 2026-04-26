@@ -64,6 +64,14 @@ Health check: `GET http://127.0.0.1:5000/api/health`
 - **`csv_creator.py`**, **`mp4_creator.py`** — Helpers for building track CSVs and MP4s from Mapillary-style inputs.
 - **`pegasus_processor.py`** — Pegasus-related processing utilities.
 
+## Code organization
+
+The Flask entrypoint remains **`app.py`**, but most web-app logic now lives under **`sidewalk_analyzer_web/`**:
+
+- **`sidewalk_analyzer_web/routes.py`**: Flask routes and API surface
+- **`sidewalk_analyzer_web/analysis.py`**: upload → Pegasus → Overture join + saved results IO
+- **`sidewalk_analyzer_web/pegasus.py`**, **`overture.py`**, **`mapillary.py`**: service-specific helpers
+
 For downloading Mapillary assets outside this repo, the [mapillary_download](https://github.com/Stefal/mapillary_download) project is a common reference.
 
 ## Pipeline page (`/pipeline`)
