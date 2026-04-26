@@ -1,130 +1,574 @@
 [
   {
-    "frame": 136,
-    "lat": 32.79005003501666,
-    "long": -96.80158232395831,
-    "severity": "low",
-    "description": "Visible cracking and unevenness on the walking sidewalk",
-    "osm_sidewalk": null
+    "time": 40,
+    "lat": 32.788270889436106,
+    "lon": -96.79924050848334,
+    "hazard": {
+      "start": 40,
+      "end": 50,
+      "severity": "medium",
+      "description": "Noticeable vertical offset in the sidewalk surface caused by uneven ground beneath it, creating a tripping hazard for pedestrians."
+    },
+    "gers_id": "7b4ce012-7403-4dfc-bb1a-282b70376d07",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 137,
-    "lat": 32.79007133682222,
-    "long": -96.80160474641944,
-    "severity": "low",
-    "description": "Visible cracking and unevenness on the walking sidewalk",
-    "osm_sidewalk": null
+    "time": 41,
+    "lat": 32.788282600075,
+    "lon": -96.7992736949361,
+    "hazard": {
+      "start": 40,
+      "end": 50,
+      "severity": "medium",
+      "description": "Noticeable vertical offset in the sidewalk surface caused by uneven ground beneath it, creating a tripping hazard for pedestrians."
+    },
+    "gers_id": "7b4ce012-7403-4dfc-bb1a-282b70376d07",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 138,
-    "lat": 32.790093429924994,
-    "long": -96.80162878130557,
-    "severity": "low",
-    "description": "Visible cracking and unevenness on the walking sidewalk",
-    "osm_sidewalk": null
+    "time": 42,
+    "lat": 32.78829403934722,
+    "lon": -96.79930327596666,
+    "hazard": {
+      "start": 40,
+      "end": 50,
+      "severity": "medium",
+      "description": "Noticeable vertical offset in the sidewalk surface caused by uneven ground beneath it, creating a tripping hazard for pedestrians."
+    },
+    "gers_id": "7b4ce012-7403-4dfc-bb1a-282b70376d07",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 139,
-    "lat": 32.790113558622224,
-    "long": -96.80165157931113,
-    "severity": "low",
-    "description": "Visible cracking and unevenness on the walking sidewalk",
-    "osm_sidewalk": null
+    "time": 43,
+    "lat": 32.78830444028333,
+    "lon": -96.79933658071388,
+    "hazard": {
+      "start": 40,
+      "end": 50,
+      "severity": "medium",
+      "description": "Noticeable vertical offset in the sidewalk surface caused by uneven ground beneath it, creating a tripping hazard for pedestrians."
+    },
+    "gers_id": "7b4ce012-7403-4dfc-bb1a-282b70376d07",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 140,
-    "lat": 32.79013310464166,
-    "long": -96.80167404106945,
-    "severity": "low",
-    "description": "Visible cracking and unevenness on the walking sidewalk",
-    "osm_sidewalk": null
+    "time": 44,
+    "lat": 32.788312672975,
+    "lon": -96.79936957658332,
+    "hazard": {
+      "start": 40,
+      "end": 50,
+      "severity": "medium",
+      "description": "Noticeable vertical offset in the sidewalk surface caused by uneven ground beneath it, creating a tripping hazard for pedestrians."
+    },
+    "gers_id": "7b4ce012-7403-4dfc-bb1a-282b70376d07",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 141,
-    "lat": 32.79015433291111,
-    "long": -96.8016952072972,
-    "severity": "low",
-    "description": "Visible cracking and unevenness on the walking sidewalk",
-    "osm_sidewalk": null
+    "time": 45,
+    "lat": 32.78832097600278,
+    "lon": -96.79940350251668,
+    "hazard": {
+      "start": 40,
+      "end": 50,
+      "severity": "medium",
+      "description": "Noticeable vertical offset in the sidewalk surface caused by uneven ground beneath it, creating a tripping hazard for pedestrians."
+    },
+    "gers_id": "7b4ce012-7403-4dfc-bb1a-282b70376d07",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 142,
-    "lat": 32.79017293350833,
-    "long": -96.80171848495831,
-    "severity": "low",
-    "description": "Visible cracking and unevenness on the walking sidewalk",
-    "osm_sidewalk": null
+    "time": 46,
+    "lat": 32.788326177363885,
+    "lon": -96.79943819143612,
+    "hazard": {
+      "start": 40,
+      "end": 50,
+      "severity": "medium",
+      "description": "Noticeable vertical offset in the sidewalk surface caused by uneven ground beneath it, creating a tripping hazard for pedestrians."
+    },
+    "gers_id": "7b4ce012-7403-4dfc-bb1a-282b70376d07",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 143,
-    "lat": 32.79019456075833,
-    "long": -96.80173950424168,
-    "severity": "low",
-    "description": "Visible cracking and unevenness on the walking sidewalk",
-    "osm_sidewalk": null
+    "time": 47,
+    "lat": 32.78833552805278,
+    "lon": -96.79947127361666,
+    "hazard": {
+      "start": 40,
+      "end": 50,
+      "severity": "medium",
+      "description": "Noticeable vertical offset in the sidewalk surface caused by uneven ground beneath it, creating a tripping hazard for pedestrians."
+    },
+    "gers_id": "7b445c9d-f047-4d49-bfcf-1f99907cb6b3",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 143,
-    "lat": 32.79019456075833,
-    "long": -96.80173950424168,
-    "severity": "medium",
-    "description": "Deeper cracks further ahead on the same side of the street",
-    "osm_sidewalk": null
+    "time": 48,
+    "lat": 32.78833927527778,
+    "lon": -96.79950313253887,
+    "hazard": {
+      "start": 40,
+      "end": 50,
+      "severity": "medium",
+      "description": "Noticeable vertical offset in the sidewalk surface caused by uneven ground beneath it, creating a tripping hazard for pedestrians."
+    },
+    "gers_id": "7b445c9d-f047-4d49-bfcf-1f99907cb6b3",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 144,
-    "lat": 32.79021572129722,
-    "long": -96.80176206455832,
-    "severity": "medium",
-    "description": "Deeper cracks further ahead on the same side of the street",
-    "osm_sidewalk": null
+    "time": 49,
+    "lat": 32.78834360925,
+    "lon": -96.79953656466944,
+    "hazard": {
+      "start": 40,
+      "end": 50,
+      "severity": "medium",
+      "description": "Noticeable vertical offset in the sidewalk surface caused by uneven ground beneath it, creating a tripping hazard for pedestrians."
+    },
+    "gers_id": "7b445c9d-f047-4d49-bfcf-1f99907cb6b3",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 145,
-    "lat": 32.79023686895,
-    "long": -96.80178364825,
-    "severity": "medium",
-    "description": "Deeper cracks further ahead on the same side of the street",
-    "osm_sidewalk": null
+    "time": 50,
+    "lat": 32.788348559494445,
+    "lon": -96.79956884683612,
+    "hazard": {
+      "start": 40,
+      "end": 50,
+      "severity": "medium",
+      "description": "Noticeable vertical offset in the sidewalk surface caused by uneven ground beneath it, creating a tripping hazard for pedestrians."
+    },
+    "gers_id": "7b445c9d-f047-4d49-bfcf-1f99907cb6b3",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 146,
-    "lat": 32.790258730999994,
-    "long": -96.8018031847361,
-    "severity": "medium",
-    "description": "Deeper cracks further ahead on the same side of the street",
-    "osm_sidewalk": null
+    "time": 50,
+    "lat": 32.788348559494445,
+    "lon": -96.79956884683612,
+    "hazard": {
+      "start": 50,
+      "end": 60,
+      "severity": "low",
+      "description": "Several potholes scattered across the pavement, varying in size but clearly affecting the smoothness of driving conditions."
+    },
+    "gers_id": "7b445c9d-f047-4d49-bfcf-1f99907cb6b3",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 147,
-    "lat": 32.79027707278333,
-    "long": -96.80182704723332,
-    "severity": "medium",
-    "description": "Deeper cracks further ahead on the same side of the street",
-    "osm_sidewalk": null
+    "time": 51,
+    "lat": 32.788354951972224,
+    "lon": -96.79960107393887,
+    "hazard": {
+      "start": 50,
+      "end": 60,
+      "severity": "low",
+      "description": "Several potholes scattered across the pavement, varying in size but clearly affecting the smoothness of driving conditions."
+    },
+    "gers_id": "7b445c9d-f047-4d49-bfcf-1f99907cb6b3",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 148,
-    "lat": 32.790295616224995,
-    "long": -96.80185173116112,
-    "severity": "medium",
-    "description": "Deeper cracks further ahead on the same side of the street",
-    "osm_sidewalk": null
+    "time": 52,
+    "lat": 32.788363414327776,
+    "lon": -96.79963412039444,
+    "hazard": {
+      "start": 50,
+      "end": 60,
+      "severity": "low",
+      "description": "Several potholes scattered across the pavement, varying in size but clearly affecting the smoothness of driving conditions."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 149,
-    "lat": 32.790313001744444,
-    "long": -96.80187658976388,
-    "severity": "medium",
-    "description": "Deeper cracks further ahead on the same side of the street",
-    "osm_sidewalk": null
+    "time": 53,
+    "lat": 32.78836693320833,
+    "lon": -96.79966642471666,
+    "hazard": {
+      "start": 50,
+      "end": 60,
+      "severity": "low",
+      "description": "Several potholes scattered across the pavement, varying in size but clearly affecting the smoothness of driving conditions."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
   },
   {
-    "frame": 150,
-    "lat": 32.790333060119444,
-    "long": -96.801899790475,
-    "severity": "medium",
-    "description": "Deeper cracks further ahead on the same side of the street",
-    "osm_sidewalk": null
+    "time": 54,
+    "lat": 32.7883781414,
+    "lon": -96.79969705591944,
+    "hazard": {
+      "start": 50,
+      "end": 60,
+      "severity": "low",
+      "description": "Several potholes scattered across the pavement, varying in size but clearly affecting the smoothness of driving conditions."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 55,
+    "lat": 32.78839325979166,
+    "lon": -96.79972529933056,
+    "hazard": {
+      "start": 50,
+      "end": 60,
+      "severity": "low",
+      "description": "Several potholes scattered across the pavement, varying in size but clearly affecting the smoothness of driving conditions."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 56,
+    "lat": 32.78840621785833,
+    "lon": -96.79975353928612,
+    "hazard": {
+      "start": 50,
+      "end": 60,
+      "severity": "low",
+      "description": "Several potholes scattered across the pavement, varying in size but clearly affecting the smoothness of driving conditions."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 57,
+    "lat": 32.788419697799995,
+    "lon": -96.79978324135276,
+    "hazard": {
+      "start": 50,
+      "end": 60,
+      "severity": "low",
+      "description": "Several potholes scattered across the pavement, varying in size but clearly affecting the smoothness of driving conditions."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 58,
+    "lat": 32.788437591177775,
+    "lon": -96.79981208684724,
+    "hazard": {
+      "start": 50,
+      "end": 60,
+      "severity": "low",
+      "description": "Several potholes scattered across the pavement, varying in size but clearly affecting the smoothness of driving conditions."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 59,
+    "lat": 32.788453312430555,
+    "lon": -96.7998422100722,
+    "hazard": {
+      "start": 50,
+      "end": 60,
+      "severity": "low",
+      "description": "Several potholes scattered across the pavement, varying in size but clearly affecting the smoothness of driving conditions."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 60,
+    "lat": 32.78846466914167,
+    "lon": -96.79987502016668,
+    "hazard": {
+      "start": 50,
+      "end": 60,
+      "severity": "low",
+      "description": "Several potholes scattered across the pavement, varying in size but clearly affecting the smoothness of driving conditions."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 60,
+    "lat": 32.78846466914167,
+    "lon": -96.79987502016668,
+    "hazard": {
+      "start": 60,
+      "end": 70,
+      "severity": "medium",
+      "description": "Large cracks running parallel to each other throughout various parts of the roadway, indicating potential structural weaknesses within its foundation layers."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 61,
+    "lat": 32.78847901943333,
+    "lon": -96.79990547148331,
+    "hazard": {
+      "start": 60,
+      "end": 70,
+      "severity": "medium",
+      "description": "Large cracks running parallel to each other throughout various parts of the roadway, indicating potential structural weaknesses within its foundation layers."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 62,
+    "lat": 32.78849297648889,
+    "lon": -96.79993428988055,
+    "hazard": {
+      "start": 60,
+      "end": 70,
+      "severity": "medium",
+      "description": "Large cracks running parallel to each other throughout various parts of the roadway, indicating potential structural weaknesses within its foundation layers."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 63,
+    "lat": 32.78850712971944,
+    "lon": -96.79996359560278,
+    "hazard": {
+      "start": 60,
+      "end": 70,
+      "severity": "medium",
+      "description": "Large cracks running parallel to each other throughout various parts of the roadway, indicating potential structural weaknesses within its foundation layers."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 64,
+    "lat": 32.78851854743056,
+    "lon": -96.79999449516112,
+    "hazard": {
+      "start": 60,
+      "end": 70,
+      "severity": "medium",
+      "description": "Large cracks running parallel to each other throughout various parts of the roadway, indicating potential structural weaknesses within its foundation layers."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 65,
+    "lat": 32.78853391645556,
+    "lon": -96.80002443402778,
+    "hazard": {
+      "start": 60,
+      "end": 70,
+      "severity": "medium",
+      "description": "Large cracks running parallel to each other throughout various parts of the roadway, indicating potential structural weaknesses within its foundation layers."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 66,
+    "lat": 32.788555615041666,
+    "lon": -96.80004690841388,
+    "hazard": {
+      "start": 60,
+      "end": 70,
+      "severity": "medium",
+      "description": "Large cracks running parallel to each other throughout various parts of the roadway, indicating potential structural weaknesses within its foundation layers."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 67,
+    "lat": 32.78858184048611,
+    "lon": -96.80006489279722,
+    "hazard": {
+      "start": 60,
+      "end": 70,
+      "severity": "medium",
+      "description": "Large cracks running parallel to each other throughout various parts of the roadway, indicating potential structural weaknesses within its foundation layers."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 68,
+    "lat": 32.788608250783334,
+    "lon": -96.80007496448331,
+    "hazard": {
+      "start": 60,
+      "end": 70,
+      "severity": "medium",
+      "description": "Large cracks running parallel to each other throughout various parts of the roadway, indicating potential structural weaknesses within its foundation layers."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 69,
+    "lat": 32.78863285868055,
+    "lon": -96.800090846625,
+    "hazard": {
+      "start": 60,
+      "end": 70,
+      "severity": "medium",
+      "description": "Large cracks running parallel to each other throughout various parts of the roadway, indicating potential structural weaknesses within its foundation layers."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 70,
+    "lat": 32.78865540515555,
+    "lon": -96.80011140515556,
+    "hazard": {
+      "start": 60,
+      "end": 70,
+      "severity": "medium",
+      "description": "Large cracks running parallel to each other throughout various parts of the roadway, indicating potential structural weaknesses within its foundation layers."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 70,
+    "lat": 32.78865540515555,
+    "lon": -96.80011140515556,
+    "hazard": {
+      "start": 70,
+      "end": 80,
+      "severity": "high",
+      "description": "Missing chunks of concrete altogether, which could pose significant risks when navigating such roads without proper cautionary measures taken beforehand."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 71,
+    "lat": 32.788676479075,
+    "lon": -96.80013213320834,
+    "hazard": {
+      "start": 70,
+      "end": 80,
+      "severity": "high",
+      "description": "Missing chunks of concrete altogether, which could pose significant risks when navigating such roads without proper cautionary measures taken beforehand."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 72,
+    "lat": 32.78869924586667,
+    "lon": -96.8001565881611,
+    "hazard": {
+      "start": 70,
+      "end": 80,
+      "severity": "high",
+      "description": "Missing chunks of concrete altogether, which could pose significant risks when navigating such roads without proper cautionary measures taken beforehand."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 73,
+    "lat": 32.78872056113889,
+    "lon": -96.80018104278888,
+    "hazard": {
+      "start": 70,
+      "end": 80,
+      "severity": "high",
+      "description": "Missing chunks of concrete altogether, which could pose significant risks when navigating such roads without proper cautionary measures taken beforehand."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 74,
+    "lat": 32.78874338219722,
+    "lon": -96.80020494338332,
+    "hazard": {
+      "start": 70,
+      "end": 80,
+      "severity": "high",
+      "description": "Missing chunks of concrete altogether, which could pose significant risks when navigating such roads without proper cautionary measures taken beforehand."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 75,
+    "lat": 32.788763941275,
+    "lon": -96.80022694685556,
+    "hazard": {
+      "start": 70,
+      "end": 80,
+      "severity": "high",
+      "description": "Missing chunks of concrete altogether, which could pose significant risks when navigating such roads without proper cautionary measures taken beforehand."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 76,
+    "lat": 32.78878449039444,
+    "lon": -96.80024981779722,
+    "hazard": {
+      "start": 70,
+      "end": 80,
+      "severity": "high",
+      "description": "Missing chunks of concrete altogether, which could pose significant risks when navigating such roads without proper cautionary measures taken beforehand."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 77,
+    "lat": 32.78880612903611,
+    "lon": -96.80027024480832,
+    "hazard": {
+      "start": 70,
+      "end": 80,
+      "severity": "high",
+      "description": "Missing chunks of concrete altogether, which could pose significant risks when navigating such roads without proper cautionary measures taken beforehand."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 78,
+    "lat": 32.78882841511389,
+    "lon": -96.80029203521944,
+    "hazard": {
+      "start": 70,
+      "end": 80,
+      "severity": "high",
+      "description": "Missing chunks of concrete altogether, which could pose significant risks when navigating such roads without proper cautionary measures taken beforehand."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 79,
+    "lat": 32.78885070379722,
+    "lon": -96.80031150632776,
+    "hazard": {
+      "start": 70,
+      "end": 80,
+      "severity": "high",
+      "description": "Missing chunks of concrete altogether, which could pose significant risks when navigating such roads without proper cautionary measures taken beforehand."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
+  },
+  {
+    "time": 80,
+    "lat": 32.788874425241666,
+    "lon": -96.80033383365556,
+    "hazard": {
+      "start": 70,
+      "end": 80,
+      "severity": "high",
+      "description": "Missing chunks of concrete altogether, which could pose significant risks when navigating such roads without proper cautionary measures taken beforehand."
+    },
+    "gers_id": "e2bea1a7-d7eb-46e6-8645-205c26ee257f",
+    "segment_type": "sidewalk"
   }
 ]
