@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sidewalk Analyzer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.5.1/mapbox-gl.css" rel="stylesheet">
+  <style>
+    .shell { max-width: 1200px; margin: 0 auto; padding: 20px; }
+    .hero { margin-bottom: 40px; }
+    .video-selector { margin-bottom: 20px; }
+    .status { margin: 20px 0; padding: 10px; border-radius: 4px; }
+    .status.running { background: #fff3cd; color: #856404; }
+    .status.completed { background: #d1ecf1; color: #0c5460; }
+    .status.error { background: #f8d7da; color: #721c24; }
+    .results { margin-top: 40px; }
+    .map-container { height: 500px; margin: 20px 0; border-radius: 8px; overflow: hidden; }
+    .issues { margin-top: 20px; }
+    .issue-item { padding: 10px; margin: 5px 0; background: #f8f9fa; border-radius: 4px; }
+    .mono { font-family: monospace; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <h1>Sidewalk Analyzer</h1>
+      <p>Select a video to analyze sidewalk conditions.</p>
+    </section>
+
+    <div class="video-selector">
+      <h2>Select Video</h2>
+      <select id="video-select">
+        <option value="">Loading videos...</option>
+      </select>
+      <button id="analyze-btn" disabled>Analyze Video</button>
+    </div>
+
+    <div id="status-container" class="status hidden">
+      <div>Status: <span id="status-text">Idle</span></div>
+      <div id="run-id-display" class="hidden">Run ID: <span id="run-id" class="mono"></span></div>
+    </div>
+
+    <div id="results-container" class="results hidden">
+      <h2>Analysis Results</h2>
+
+      <div class="issues">
+        <h3>Issues Found</h3>
+        <div id="issues-list"></div>
+      </div>
+
+      <h3>Frame Locations</h3>
+      <div id="map" class="map-container"></div>
+
+      <h3>Raw Data</h3>
+      <div id="csv-table"></div>
+    </div>
+  </div>
+
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.5.1/mapbox-gl.js"></script>
+  <script>
+    window.__MAPBOX_TOKEN__ = {{ mapbox_token_json|safe }};
+  </script>
+  <script>
+    const videoSelect = document.getElementById('video-select');
+    const analyzeBtn = document.getElementById('analyze-btn');
+    const statusContainer = document.getElementById('status-container');
+    const statusText = document.getElementById('status-text');
+    const runIdDisplay = document.getElementById('run-id-display');
+    const runIdSpan = document.getElementById('run-id');
+    const resultsContainer = document.getElementById('results-container');
+    const issuesList = document.getElementById('issues-list');
+    const csvTable = document.getElementById('csv-table');
+
+    let map = null;
+    let currentRunId = null;
+
+    // Initialize map
+    function initMap() {
+      const token = window.__MAPBOX_TOKEN__;
+      if (!token || token.length === 0) {
+        alert('Missing MAPBOX_ACCESS_TOKEN in .env. Map will not render.');
+        return;
+      }
+
+      mapboxgl.accessToken = token;
+      map = new mapboxgl.Map({
+        container: 'map',
+        style: 'mapbox://styles/mapbox/streets-v11',
+        center: [-96.798, 32.788], // Default center based on CSV data
+        zoom: 15
+      });
+    }
+
+    // Load available videos
+    async function loadVideos() {
+      try {
+        const response = await fetch('/api/videos');
+        const data = await response.json();
+        videoSelect.innerHTML = '<option value="">Select a video...</option>';
+        data.videos.forEach(video => {
+          const option = document.createElement('option');
+          option.value = video;
+          option.textContent = video;
+          videoSelect.appendChild(option);
+        });
+        analyzeBtn.disabled = false;
+      } catch (error) {
+        console.error('Error loading videos:', error);
+        videoSelect.innerHTML = '<option value="">Error loading videos</option>';
+      }
+    }
+
+    // Start analysis
+    async function startAnalysis(videoPath) {
+      try {
+        statusContainer.className = 'status running';
+        statusContainer.classList.remove('hidden');
+        statusText.textContent = 'Starting analysis...';
+        resultsContainer.classList.add('hidden');
+
+        const response = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ video_path: videoPath })
+        });
+
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to start analysis');
+
+        currentRunId = data.run_id;
+        runIdSpan.textContent = currentRunId;
+        runIdDisplay.classList.remove('hidden');
+
+        pollStatus();
+      } catch (error) {
+        statusText.textContent = 'Error: ' + error.message;
+        statusContainer.className = 'status error';
+      }
+    }
+
+    // Poll for status
+    async function pollStatus() {
+      try {
+        const response = await fetch(`/api/status/${currentRunId}`);
+        const data = await response.json();
+
+        statusText.textContent = data.status;
+
+        if (data.status === 'completed') {
+          statusContainer.className = 'status completed';
+          loadResults();
+        } else if (data.status === 'error') {
+          statusContainer.className = 'status error';
+          statusText.textContent = 'Error: ' + (data.error || 'Unknown error');
+        } else {
+          setTimeout(pollStatus, 2000);
+        }
+      } catch (error) {
+        statusText.textContent = 'Error checking status';
+        statusContainer.className = 'status error';
+      }
+    }
+
+    // Load results
+    async function loadResults() {
+      try {
+        const response = await fetch(`/api/results/${currentRunId}`);
+        const data = await response.json();
+
+        displayResults(data);
+        resultsContainer.classList.remove('hidden');
+      } catch (error) {
+        console.error('Error loading results:', error);
+        statusText.textContent = 'Error loading results';
+        statusContainer.className = 'status error';
+      }
+    }
+
+    // Display results
+    function displayResults(data) {
+      // Display issues
+      issuesList.innerHTML = '';
+      const issues = data.filter(row => row.issues && row.issues.trim());
+      if (issues.length === 0) {
+        issuesList.innerHTML = '<p>No issues found.</p>';
+      } else {
+        issues.forEach(issue => {
+          const div = document.createElement('div');
+          div.className = 'issue-item';
+          div.innerHTML = `
+            <strong>Frame ${issue.frame}</strong><br>
+            Location: ${issue.lat.toFixed(6)}, ${issue.lon.toFixed(6)}<br>
+            GERS ID: <span class="mono">${issue.gers_id}</span><br>
+            Issues: ${issue.issues}
+          `;
+          issuesList.appendChild(div);
+        });
+      }
+
+      // Add points to map
+      if (map) {
+        // Clear existing markers
+        if (map.getLayer('frames')) {
+          map.removeLayer('frames');
+          map.removeSource('frames');
+        }
+
+        const features = data.map(row => ({
+          type: 'Feature',
+          geometry: {
+            type: 'Point',
+            coordinates: [row.lon, row.lat]
+          },
+          properties: {
+            frame: row.frame,
+            issues: row.issues || '',
+            gers_id: row.gers_id
+          }
+        }));
+
+        map.addSource('frames', {
+          type: 'geojson',
+          data: {
+            type: 'FeatureCollection',
+            features: features
+          }
+        });
+
+        map.addLayer({
+          id: 'frames',
+          type: 'circle',
+          source: 'frames',
+          paint: {
+            'circle-radius': 6,
+            'circle-color': [
+              'case',
+              ['!=', ['get', 'issues'], ''], '#ff0000',
+              '#00ff00'
+            ],
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#ffffff'
+          }
+        });
+
+        // Fit map to points
+        const bounds = new mapboxgl.LngLatBounds();
+        features.forEach(feature => {
+          bounds.extend(feature.geometry.coordinates);
+        });
+        map.fitBounds(bounds, { padding: 20 });
+      }
+
+      // Display CSV table
+      csvTable.innerHTML = '';
+      const table = document.createElement('table');
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>Frame</th>
+            <th>Latitude</th>
+            <th>Longitude</th>
+            <th>GERS ID</th>
+            <th>Segment Type</th>
+            <th>Issues</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.map(row => `
+            <tr>
+              <td>${row.frame}</td>
+              <td>${row.lat.toFixed(6)}</td>
+              <td>${row.lon.toFixed(6)}</td>
+              <td class="mono">${row.gers_id}</td>
+              <td>${row.segment_type}</td>
+              <td>${row.issues || ''}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      `;
+      csvTable.appendChild(table);
+    }
+
+    // Event listeners
+    videoSelect.addEventListener('change', () => {
+      analyzeBtn.disabled = !videoSelect.value;
+    });
+
+    analyzeBtn.addEventListener('click', () => {
+      const videoPath = videoSelect.value;
+      if (videoPath) {
+        startAnalysis(videoPath);
+      }
+    });
+
+    // Initialize
+    initMap();
+    loadVideos();
+  </script>
+</body>
+</html></content>
+<parameter name="filePath">c:\Users\luckz\Documents\gh\sidewalk-analyzer\templates\index.html

@@ -13,6 +13,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import boto3
+import pandas as pd
 import requests
 from flask import Flask, jsonify, render_template, request, send_file
 
@@ -46,6 +48,15 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 
 PIPELINE_RUNS: dict[str, dict[str, Any]] = {}
 PIPELINE_LOCK = threading.Lock()
+
+# AWS Configuration
+BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "sidewalk-analyzer-vincent")
+REGION = os.getenv("AWS_REGION", "us-east-1")
+MODEL_ID = os.getenv("AWS_MODEL_ID", "twelvelabs.pegasus-1-2-v1:0")
+BUCKET_OWNER = os.getenv("AWS_BUCKET_OWNER", "564203970240")
+
+s3 = boto3.client("s3", region_name=REGION)
+bedrock = boto3.client("bedrock-runtime", region_name=REGION)
 
 
 def fetch_json(url: str, *, params: dict[str, Any], headers: dict[str, str] | None = None) -> Any:
@@ -558,9 +569,209 @@ def enrich_images_with_sidewalk_gers(images: list[dict[str, Any]]) -> tuple[list
         return images, "error", str(exc)
 
 
+def _run_analysis_job(run_id: str, video_path: str) -> None:
+    try:
+        sequence_id = os.path.splitext(os.path.basename(video_path))[0]
+
+        # Step 1: Upload to S3
+        s3_key = f"videos/{os.path.basename(video_path)}"
+        s3.upload_file(video_path, BUCKET_NAME, s3_key)
+        s3_uri = f"s3://{BUCKET_NAME}/{s3_key}"
+
+        # Step 2: Prompt
+        prompt = """
+You are a highly conservative civil engineering inspector analyzing a 1 FPS sidewalk video.
+
+Your goal:
+Identify individual frames (seconds) where the sidewalk is CLEARLY damaged.
+
+STRICT RULES:
+- Only report a frame if you are confident there is real structural damage
+- If unsure, DO NOT include the frame
+- It is OK to return an empty list
+
+ONLY detect:
+- large cracks
+- potholes
+- missing chunks of sidewalk
+- major uneven slabs or trip hazards
+
+IGNORE:
+- shadows, lighting, blur
+- minor wear or texture
+- dirt or discoloration
+
+IMPORTANT:
+Treat EACH second independently. Do NOT group frames into ranges.
+
+Return ONLY valid JSON:
+
+[
+  {
+    "time": number,
+    "severity": "medium | high",
+    "description": "brief factual description"
+  }
+]
+"""
+
+        body = {
+            "inputPrompt": prompt,
+            "mediaSource": {
+                "s3Location": {
+                    "uri": s3_uri,
+                    "bucketOwner": BUCKET_OWNER
+                }
+            }
+        }
+
+        # Step 3: Run Pegasus analysis
+        response = bedrock.invoke_model(
+            modelId=MODEL_ID,
+            body=json.dumps(body)
+        )
+
+        raw_res = response["body"].read().decode("utf-8")
+        res_json = json.loads(raw_res)
+        msg = res_json.get("message", "[]")
+        detections_raw = json.loads(msg.replace("```json", "").replace("```", "").strip())
+
+        # Step 4: Normalize detections
+        detections = []
+        for det in detections_raw:
+            if "time" in det:
+                detections.append({
+                    "time": int(det["time"]),
+                    "severity": det.get("severity", ""),
+                    "description": det.get("description", "")
+                })
+            elif "start" in det and "end" in det:
+                start = int(det["start"])
+                end = int(det["end"])
+                for t in range(start, end + 1):
+                    detections.append({
+                        "time": t,
+                        "severity": det.get("severity", ""),
+                        "description": det.get("description", "")
+                    })
+
+        # Step 5: Load CSV
+        csv_path = os.path.join("csvs", f"{sequence_id}.csv")
+        df = pd.read_csv(csv_path)
+
+        # Step 6: Download Overture data
+        import overturemaps
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        bbox = (
+            df['long'].min() - 0.001,
+            df['lat'].min() - 0.001,
+            df['long'].max() + 0.001,
+            df['lat'].max() + 0.001
+        )
+
+        table = overturemaps.record_batch_reader("segment", bbox).read_all()
+        gdf = gpd.GeoDataFrame.from_arrow(table)
+
+        sidewalk_keys = {'sidewalk', 'footway', 'pedestrian', 'path'}
+
+        # Step 7: Build results
+        frame_issues = {i: [] for i in range(len(df))}
+        for det in detections:
+            t = det["time"]
+            if t < len(df):
+                desc = f"{det['severity']}: {det['description']}"
+                frame_issues[t].append(desc)
+
+        rows = []
+        for i in range(len(df)):
+            row = df.iloc[i]
+            p = Point(row["long"], row["lat"])
+
+            gdf["dist"] = gdf.geometry.distance(p)
+            is_sidewalk = gdf["subclass"].isin(sidewalk_keys)
+            sidewalks = gdf[is_sidewalk & (gdf["dist"] < 0.00015)]
+
+            if not sidewalks.empty:
+                best = sidewalks.loc[sidewalks["dist"].idxmin()]
+            else:
+                best = gdf.loc[gdf["dist"].idxmin()]
+
+            issues = " | ".join(frame_issues[i]) if frame_issues[i] else ""
+
+            rows.append({
+                "frame": i,
+                "lat": row["lat"],
+                "lon": row["long"],
+                "gers_id": best["id"],
+                "segment_type": best.get("subclass", ""),
+                "issues": issues
+            })
+
+        results = rows
+
+        with PIPELINE_LOCK:
+            PIPELINE_RUNS[run_id]["status"] = "completed"
+            PIPELINE_RUNS[run_id]["results"] = results
+
+    except Exception as exc:
+        with PIPELINE_LOCK:
+            PIPELINE_RUNS[run_id]["status"] = "error"
+            PIPELINE_RUNS[run_id]["error"] = str(exc)
+
+
+@app.get("/api/videos")
+def api_videos():
+    videos = [f for f in os.listdir('.') if f.endswith('.mp4')]
+    return jsonify({"videos": videos})
+
+
+@app.post("/api/analyze")
+def api_analyze():
+    payload = request.get_json(silent=True) or {}
+    video_path = str(payload.get("video_path") or "").strip()
+    if not video_path or not os.path.exists(video_path):
+        return jsonify({"error": "Invalid video path"}), 400
+
+    run_id = uuid.uuid4().hex[:12]
+    with PIPELINE_LOCK:
+        PIPELINE_RUNS[run_id] = {"status": "running", "created_at": datetime.now(tz=timezone.utc).isoformat()}
+
+    thread = threading.Thread(
+        target=_run_analysis_job,
+        args=(run_id, video_path),
+        daemon=True,
+    )
+    thread.start()
+    return jsonify({"run_id": run_id, "status": "running"})
+
+
+@app.get("/api/status/<run_id>")
+def api_status(run_id: str):
+    with PIPELINE_LOCK:
+        run = PIPELINE_RUNS.get(run_id)
+    if not run:
+        return jsonify({"error": "run not found"}), 404
+    return jsonify({"run_id": run_id, **run})
+
+
+@app.get("/api/results/<run_id>")
+def api_results(run_id: str):
+    with PIPELINE_LOCK:
+        run = PIPELINE_RUNS.get(run_id)
+    if not run:
+        return jsonify({"error": "run not found"}), 404
+    if run.get("status") != "completed":
+        return jsonify({"error": "run not completed", "status": run.get("status")}), 409
+    return jsonify(run.get("results") or [])
+
+
 @app.get("/")
 def index() -> str:
-    return render_template("index.html")
+    mapbox_token = os.getenv("MAPBOX_ACCESS_TOKEN", "").strip()
+    import json
+    return render_template("index.html", mapbox_token_json=json.dumps(mapbox_token))
 
 
 @app.get("/pipeline")
