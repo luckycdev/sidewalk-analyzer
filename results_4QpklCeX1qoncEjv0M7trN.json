@@ -1,0 +1,130 @@
+[
+  {
+    "frame": 136,
+    "lat": 32.79005003501666,
+    "long": -96.80158232395831,
+    "severity": "low",
+    "description": "Visible cracking and unevenness on the walking sidewalk",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 137,
+    "lat": 32.79007133682222,
+    "long": -96.80160474641944,
+    "severity": "low",
+    "description": "Visible cracking and unevenness on the walking sidewalk",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 138,
+    "lat": 32.790093429924994,
+    "long": -96.80162878130557,
+    "severity": "low",
+    "description": "Visible cracking and unevenness on the walking sidewalk",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 139,
+    "lat": 32.790113558622224,
+    "long": -96.80165157931113,
+    "severity": "low",
+    "description": "Visible cracking and unevenness on the walking sidewalk",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 140,
+    "lat": 32.79013310464166,
+    "long": -96.80167404106945,
+    "severity": "low",
+    "description": "Visible cracking and unevenness on the walking sidewalk",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 141,
+    "lat": 32.79015433291111,
+    "long": -96.8016952072972,
+    "severity": "low",
+    "description": "Visible cracking and unevenness on the walking sidewalk",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 142,
+    "lat": 32.79017293350833,
+    "long": -96.80171848495831,
+    "severity": "low",
+    "description": "Visible cracking and unevenness on the walking sidewalk",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 143,
+    "lat": 32.79019456075833,
+    "long": -96.80173950424168,
+    "severity": "low",
+    "description": "Visible cracking and unevenness on the walking sidewalk",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 143,
+    "lat": 32.79019456075833,
+    "long": -96.80173950424168,
+    "severity": "medium",
+    "description": "Deeper cracks further ahead on the same side of the street",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 144,
+    "lat": 32.79021572129722,
+    "long": -96.80176206455832,
+    "severity": "medium",
+    "description": "Deeper cracks further ahead on the same side of the street",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 145,
+    "lat": 32.79023686895,
+    "long": -96.80178364825,
+    "severity": "medium",
+    "description": "Deeper cracks further ahead on the same side of the street",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 146,
+    "lat": 32.790258730999994,
+    "long": -96.8018031847361,
+    "severity": "medium",
+    "description": "Deeper cracks further ahead on the same side of the street",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 147,
+    "lat": 32.79027707278333,
+    "long": -96.80182704723332,
+    "severity": "medium",
+    "description": "Deeper cracks further ahead on the same side of the street",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 148,
+    "lat": 32.790295616224995,
+    "long": -96.80185173116112,
+    "severity": "medium",
+    "description": "Deeper cracks further ahead on the same side of the street",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 149,
+    "lat": 32.790313001744444,
+    "long": -96.80187658976388,
+    "severity": "medium",
+    "description": "Deeper cracks further ahead on the same side of the street",
+    "osm_sidewalk": null
+  },
+  {
+    "frame": 150,
+    "lat": 32.790333060119444,
+    "long": -96.801899790475,
+    "severity": "medium",
+    "description": "Deeper cracks further ahead on the same side of the street",
+    "osm_sidewalk": null
+  }
+]

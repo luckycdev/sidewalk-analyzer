@@ -1,85 +1,70 @@
 import pandas as pd
-from moviepy import ImageSequenceClip
+from moviepy import ImageSequenceClip, vfx  # Added vfx here
 import os
 
-def create_video_from_csv(csv_file, fps=5):
-    # 1. Load the CSV
-    if not os.path.exists(csv_file):
-        print(f"❌ Error: {csv_file} not found.")
-        return
-
-    df = pd.read_csv(csv_file)
-
-    # 2. Get available sequences from the ./data/ folder
-    data_dir = './data/'
-    if not os.path.exists(data_dir):
-        print(f"❌ Error: {data_dir} directory not found.")
-        return
-
-    # Scan for folders only
-    sequences = [d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d))]
+def create_video_from_csv(fps=1):
+    csv_dir = './csvs/'
     
-    if not sequences:
-        print("❌ No sequence folders found in ./data/")
+    if not os.path.exists(csv_dir):
+        print(f"❌ Error: {csv_dir} directory not found. Run extract_metadata.py first!")
         return
 
-    # 3. Ask user which sequence to process
-    print("\n--- Available Sequences ---")
-    for idx, seq in enumerate(sequences):
-        print(f"[{idx}] {seq}")
+    csv_files = [f for f in os.listdir(csv_dir) if f.endswith('.csv')]
+    
+    if not csv_files:
+        print(f"❌ No CSV files found in {csv_dir}")
+        return
+
+    print("\n--- Available CSV Sequences ---")
+    for idx, filename in enumerate(csv_files):
+        print(f"[{idx}] {filename.replace('.csv', '')}")
     
     try:
-        choice = int(input("\nEnter the number of the sequence you want to process: "))
-        selected_seq = sequences[choice]
+        choice = int(input("\nEnter the number of the sequence you want to turn into video: "))
+        selected_csv_name = csv_files[choice]
+        sequence_id = selected_csv_name.replace('.csv', '')
     except (ValueError, IndexError):
         print("❌ Invalid selection. Exiting.")
         return
 
-    # 4. Filter the CSV for the selected sequence
-    # This matches the folder name in your path: ./data/sequenceid/
-    seq_path_part = f"{selected_seq}"
-    filtered_df = df[df['file_path'].str.contains(seq_path_part, case=False, na=False)]
-    
-    # Sort by index to maintain chronological walking order
-    filtered_df = filtered_df.sort_values('index')
-    image_files = filtered_df['file_path'].tolist()
+    csv_path = os.path.join(csv_dir, selected_csv_name)
+    print(f"📖 Reading {selected_csv_name}...")
+    df = pd.read_csv(csv_path)
 
-    # 5. Filter to ensure files actually exist on disk
+    df = df.sort_values('index')
+    image_files = df['file_path'].tolist()
+
     valid_images = [img for img in image_files if os.path.exists(img)]
-    
+
     if not valid_images:
-        print(f"❌ No valid images found for sequence: {selected_seq}")
+        print(f"❌ No valid images found on disk for this sequence.")
         return
 
-    # 6. Create and compress the video
-    output_name = f"{selected_seq}.mp4"
+    output_name = f"{sequence_id}.mp4"
     print(f"🎬 Creating {output_name} ({len(valid_images)} frames)...")
 
     try:
-        # Load images
         clip = ImageSequenceClip(valid_images, fps=fps)
 
-        # COMPRESSION SETTINGS:
-        # Resize to 720p height (keeps aspect ratio) to slash file size
+        # UPDATED RESIZE LOGIC FOR MOVIEPY 2.0+
         if clip.h > 720:
-            clip = clip.resize(height=720)
+            print("📉 Resizing to 720p...")
+            clip = clip.with_effects([vfx.Resize(height=720)]) # New syntax
 
         clip.write_videofile(
             output_name, 
             codec='libx264', 
             audio=False, 
             ffmpeg_params=[
-                "-crf", "28",           # Higher number = more compression (23-28 is sweet spot)
-                "-preset", "veryslow",  # Takes longer to encode, but makes file smaller
-                "-pix_fmt", "yuv420p"   # Ensures maximum compatibility
+                "-crf", "28",
+                "-preset", "veryslow",
+                "-pix_fmt", "yuv420p"
             ]
         )
         print(f"\n✅ Successfully created {output_name}")
-        print(f"📍 Location: {os.path.abspath(output_name)}")
         
     except Exception as e:
         print(f"❌ Error during video creation: {e}")
 
 if __name__ == "__main__":
-    # You can change fps here (e.g., fps=1 for slow, fps=10 for fast timelapse)
-    create_video_from_csv(csv_file='image_coordinates.csv', fps=1)
+    create_video_from_csv(fps=1)
