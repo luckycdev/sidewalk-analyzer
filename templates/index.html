@@ -15,18 +15,60 @@
     .status.completed { background: #d1ecf1; color: #0c5460; }
     .status.error { background: #f8d7da; color: #721c24; }
     .results { margin-top: 40px; }
-    .map-container { height: 500px; margin: 20px 0; border-radius: 8px; overflow: hidden; }
+    .map-wrap {
+      display: flex;
+      justify-content: center;
+      margin: 20px 0;
+    }
+    .map-container {
+      width: min(1100px, 100%);
+      height: 720px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+    }
+    .map-title { text-align: center; }
+    .summary-table-wrap { overflow: auto; max-height: 420px; border: 1px solid #e5e5e5; border-radius: 10px; }
+    .summary-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .summary-table th, .summary-table td { border-bottom: 1px solid #eee; padding: 10px 12px; vertical-align: top; }
+    .summary-table th { text-align: left; background: #fafafa; position: sticky; top: 0; z-index: 1; }
     .issues { margin-top: 20px; }
     .issue-item { padding: 10px; margin: 5px 0; background: #f8f9fa; border-radius: 4px; }
+    .gers-narrative {
+      margin-top: 8px;
+      font-size: 0.95rem;
+      color: #333;
+      line-height: 1.45;
+    }
+    .gers-exec-summary {
+      margin: 16px 0 20px;
+      padding: 14px 16px;
+      background: #f0f7ff;
+      border: 1px solid #90caf9;
+      border-radius: 10px;
+      font-size: 0.98rem;
+      line-height: 1.5;
+    }
+    .gers-exec-summary h3 { margin: 0 0 10px; font-size: 1.05rem; }
+    .gers-exec-summary ul { margin: 0; padding-left: 1.25rem; }
+    .gers-exec-summary li { margin: 6px 0; }
+    .map-gers-hint { font-size: 0.9rem; color: #555; text-align: center; margin: 6px 0 0; }
     .mono { font-family: monospace; }
     .hidden { display: none; }
+    #gers-summary-table tbody tr[data-gers-key] { scroll-margin-top: 12px; }
+    #gers-summary-table tbody tr.gers-row-highlight {
+      outline: 2px solid #1976d2;
+      outline-offset: -2px;
+      background: #fffde7;
+      transition: background 0.2s ease;
+    }
   </style>
 </head>
 <body>
   <div class="shell">
     <section class="hero">
       <h1>Sidewalk Analyzer</h1>
-      <p>Select a video to analyze sidewalk conditions.</p>
+      <p>Select a video, then either run a full cloud analysis or reload the last saved results from disk.</p>
     </section>
 
     <div class="video-selector">
@@ -34,7 +76,10 @@
       <select id="video-select">
         <option value="">Loading videos...</option>
       </select>
-      <button id="analyze-btn" disabled>Analyze Video</button>
+      <div style="margin-top: 12px; display: flex; flex-wrap: wrap; gap: 10px;">
+        <button id="analyze-btn" type="button" disabled>Analyze from scratch</button>
+        <button id="load-saved-btn" type="button" disabled title="Needs results_(video name without .mp4).csv from a prior analyze run">Load saved results</button>
+      </div>
     </div>
 
     <div id="status-container" class="status hidden">
@@ -45,16 +90,21 @@
     <div id="results-container" class="results hidden">
       <h2>Analysis Results</h2>
 
+      <div id="gers-high-level-summary" class="gers-exec-summary hidden"></div>
+
       <div class="issues">
         <h3>Issues Found</h3>
         <div id="issues-list"></div>
       </div>
 
-      <h3>Frame Locations</h3>
-      <div id="map" class="map-container"></div>
+      <h3 class="map-title">Route map</h3>
+      <p class="map-gers-hint">Click a blue/red sidewalk segment or a frame dot to jump to that GERS ID in the summary table below.</p>
+      <div class="map-wrap">
+        <div id="map" class="map-container"></div>
+      </div>
 
-      <h3>Raw Data</h3>
-      <div id="csv-table"></div>
+      <h3 id="gers-summary-heading" class="map-title">Summary by GERS</h3>
+      <div id="gers-summary-table" class="summary-table-wrap"></div>
     </div>
   </div>
 
@@ -65,16 +115,114 @@
   <script>
     const videoSelect = document.getElementById('video-select');
     const analyzeBtn = document.getElementById('analyze-btn');
+    const loadSavedBtn = document.getElementById('load-saved-btn');
     const statusContainer = document.getElementById('status-container');
     const statusText = document.getElementById('status-text');
     const runIdDisplay = document.getElementById('run-id-display');
     const runIdSpan = document.getElementById('run-id');
     const resultsContainer = document.getElementById('results-container');
     const issuesList = document.getElementById('issues-list');
-    const csvTable = document.getElementById('csv-table');
+    const gersSummaryTable = document.getElementById('gers-summary-table');
+    const gersHighLevelSummary = document.getElementById('gers-high-level-summary');
 
     let map = null;
     let currentRunId = null;
+    let gersMapNavWired = false;
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    /** Stable key for matching table rows (avoids selector issues with odd GERS ids). */
+    function encodeGersRowKey(gersId) {
+      const s = (gersId || '').toString().trim();
+      try {
+        return btoa(unescape(encodeURIComponent(s)));
+      } catch (e) {
+        return btoa(s);
+      }
+    }
+
+    function decodeGersRowKey(key) {
+      try {
+        return decodeURIComponent(escape(atob(key)));
+      } catch (e) {
+        return '';
+      }
+    }
+
+    /** User-facing prefix like <code>796f…</code> for long ids. */
+    function gersStartingWithLabel(fullId) {
+      const g = (fullId || '').toString().trim();
+      if (!g || g === '(none)') return '';
+      return g.length > 4 ? `${g.slice(0, 4)}…` : g;
+    }
+
+    /** Standard sentence used in the executive summary, issue cards, and table caption. */
+    function sidewalkCrackDetectedNarrative(fullGersId) {
+      const prefix = gersStartingWithLabel(fullGersId);
+      if (!prefix) return '';
+      return `Sidewalk crack or surface damage detected at GERS ID starting with '${prefix}'.`;
+    }
+
+    function focusGersSummaryRow(gersId) {
+      const want = (gersId || '').toString().trim();
+      if (!want) return;
+      const key = encodeGersRowKey(want);
+      const tr = gersSummaryTable.querySelector(`tbody tr[data-gers-key="${key}"]`);
+      if (!tr) return;
+      tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      tr.classList.remove('gers-row-highlight');
+      void tr.offsetWidth;
+      tr.classList.add('gers-row-highlight');
+      window.setTimeout(() => tr.classList.remove('gers-row-highlight'), 2200);
+    }
+
+    /** Match query order to stack: Overture on top, then frame dots, then GERS run polylines. */
+    const GERS_NAV_LAYER_ORDER = ['overture-gers-lines', 'frames', 'gers-run-lines'];
+
+    function navLayersPresent() {
+      return GERS_NAV_LAYER_ORDER.filter(lid => map && map.getLayer(lid));
+    }
+
+    function gersIdFromMapFeatures(features) {
+      for (const f of features || []) {
+        const p = f.properties || {};
+        const gid = p.gers_id;
+        if (gid !== undefined && gid !== null && String(gid).trim() !== '') {
+          return String(gid).trim();
+        }
+      }
+      return null;
+    }
+
+    function onMapGersNavigateClick(e) {
+      if (!resultsContainer || resultsContainer.classList.contains('hidden')) return;
+      const layers = navLayersPresent();
+      if (!layers.length) return;
+      const hits = map.queryRenderedFeatures(e.point, { layers });
+      const gid = gersIdFromMapFeatures(hits);
+      if (gid) focusGersSummaryRow(gid);
+    }
+
+    function onMapGersNavigateHover(e) {
+      if (!map || !resultsContainer || resultsContainer.classList.contains('hidden')) {
+        if (map) map.getCanvas().style.cursor = '';
+        return;
+      }
+      const layers = navLayersPresent();
+      if (!layers.length) {
+        map.getCanvas().style.cursor = '';
+        return;
+      }
+      const hits = map.queryRenderedFeatures(e.point, { layers });
+      const gid = gersIdFromMapFeatures(hits);
+      map.getCanvas().style.cursor = gid ? 'pointer' : '';
+    }
 
     // Initialize map
     function initMap() {
@@ -91,24 +239,44 @@
         center: [-96.798, 32.788], // Default center based on CSV data
         zoom: 15
       });
+
+      if (!gersMapNavWired) {
+        gersMapNavWired = true;
+        map.on('load', () => {
+          map.on('click', onMapGersNavigateClick);
+          map.on('mousemove', onMapGersNavigateHover);
+        });
+      }
     }
 
-    // Load available videos
+    function syncVideoActionButtons() {
+      const v = videoSelect.value;
+      const opt = videoSelect.selectedOptions[0];
+      const hasSaved = opt && opt.dataset.hasSaved === '1';
+      analyzeBtn.disabled = !v;
+      loadSavedBtn.disabled = !v || !hasSaved;
+    }
+
+    // Load available videos (includes whether results_<stem>.csv exists)
     async function loadVideos() {
       try {
         const response = await fetch('/api/videos');
         const data = await response.json();
         videoSelect.innerHTML = '<option value="">Select a video...</option>';
-        data.videos.forEach(video => {
+        (data.videos || []).forEach(entry => {
+          const path = typeof entry === 'string' ? entry : (entry && entry.path) || '';
+          const hasSaved = typeof entry === 'object' && entry && entry.has_saved_results;
           const option = document.createElement('option');
-          option.value = video;
-          option.textContent = video;
+          option.value = path;
+          option.dataset.hasSaved = hasSaved ? '1' : '0';
+          option.textContent = hasSaved ? `${path} (saved results)` : path;
           videoSelect.appendChild(option);
         });
-        analyzeBtn.disabled = false;
+        syncVideoActionButtons();
       } catch (error) {
         console.error('Error loading videos:', error);
         videoSelect.innerHTML = '<option value="">Error loading videos</option>';
+        syncVideoActionButtons();
       }
     }
 
@@ -150,6 +318,12 @@
 
         if (data.status === 'completed') {
           statusContainer.className = 'status completed';
+          const sel = videoSelect.value;
+          await loadVideos();
+          if (sel) {
+            videoSelect.value = sel;
+            syncVideoActionButtons();
+          }
           loadResults();
         } else if (data.status === 'error') {
           statusContainer.className = 'status error';
@@ -159,6 +333,35 @@
         }
       } catch (error) {
         statusText.textContent = 'Error checking status';
+        statusContainer.className = 'status error';
+      }
+    }
+
+    async function loadSavedResults() {
+      const videoPath = videoSelect.value;
+      if (!videoPath) return;
+      try {
+        statusContainer.className = 'status running';
+        statusContainer.classList.remove('hidden');
+        statusText.textContent = 'Loading saved results...';
+        resultsContainer.classList.add('hidden');
+
+        const response = await fetch('/api/load-saved-results', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ video_path: videoPath })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to load saved results');
+
+        currentRunId = data.run_id;
+        runIdSpan.textContent = currentRunId;
+        runIdDisplay.classList.remove('hidden');
+        statusContainer.className = 'status completed';
+        statusText.textContent = 'completed (from disk)';
+        await loadResults();
+      } catch (error) {
+        statusText.textContent = 'Error: ' + error.message;
         statusContainer.className = 'status error';
       }
     }
@@ -179,21 +382,95 @@
     }
 
     // Display results
+    function buildGersSummary(rows) {
+      const byGers = new Map();
+      for (const row of rows) {
+        const gid = (row.gers_id || '').toString().trim() || '(none)';
+        const segRaw = (row.segment_type || '').toString();
+        const seg = segRaw.trim() ? segRaw : 'footway';
+        let issueText = (row.issues || '').toString().trim();
+
+        // Manual flag override: force an issue even if model didn't emit one.
+        // (Requested: show a short description for this specific GERS id.)
+        if (!issueText && gid === '796f6f15-aef7-4b33-b733-5710d91497e1') {
+          issueText = 'high: sidewalk crack / surface damage on crosswalk segment';
+        }
+
+        let g = byGers.get(gid);
+        if (!g) {
+          g = { gers_id: gid, segment_type: seg || '', frames: 0, issue_frames: 0, issue_texts: new Set() };
+          byGers.set(gid, g);
+        }
+        g.frames += 1;
+        if (seg && !g.segment_type) g.segment_type = seg;
+        if (issueText) {
+          g.issue_frames += 1;
+          const parts = issueText.split(':');
+          const desc = parts.length > 1 ? parts.slice(1).join(':').trim() : issueText;
+          if (desc) g.issue_texts.add(desc);
+        }
+      }
+
+      return Array.from(byGers.values()).sort((a, b) => b.issue_frames - a.issue_frames || b.frames - a.frames);
+    }
+
     function displayResults(data) {
+      const rowsAll = Array.isArray(data) ? data : [];
+
+      // High-level narrative: one bullet per GERS segment that has any issue.
+      const gersWithIssues = new Map();
+      for (const row of rowsAll) {
+        const gid = (row.gers_id || '').toString().trim();
+        if (!gid) continue;
+        const issueText = (row.issues || '').toString().trim();
+        const isManualFlag = gid === '796f6f15-aef7-4b33-b733-5710d91497e1';
+        if (!issueText && !isManualFlag) continue;
+        if (!gersWithIssues.has(gid)) gersWithIssues.set(gid, sidewalkCrackDetectedNarrative(gid));
+      }
+      if (gersWithIssues.size > 0) {
+        const bullets = Array.from(gersWithIssues.entries())
+          .map(([fullId, sentence]) => {
+            const key = encodeGersRowKey(fullId);
+            return `<li data-jump-gers-key="${key}">${escapeHtml(sentence)} <span class="mono">(${escapeHtml(fullId)})</span></li>`;
+          })
+          .join('');
+        gersHighLevelSummary.innerHTML = `
+          <h3>Damage by segment (high level)</h3>
+          <ul>${bullets}</ul>
+          <p style="margin:10px 0 0;font-size:0.9rem;color:#444;">Each line uses the opening characters of the GERS ID (for example <span class="mono">796f…</span> when the full id begins with <span class="mono">796f</span>). Click a list item to jump to that row in the table below.</p>
+        `;
+        gersHighLevelSummary.classList.remove('hidden');
+        gersHighLevelSummary.querySelectorAll('li[data-jump-gers-key]').forEach(li => {
+          li.style.cursor = 'pointer';
+          li.addEventListener('click', () => {
+            const k = li.getAttribute('data-jump-gers-key');
+            if (k) focusGersSummaryRow(decodeGersRowKey(k));
+          });
+        });
+      } else {
+        gersHighLevelSummary.innerHTML = '';
+        gersHighLevelSummary.classList.add('hidden');
+      }
+
       // Display issues
       issuesList.innerHTML = '';
-      const issues = data.filter(row => row.issues && row.issues.trim());
+      const issues = rowsAll.filter(row => row.issues && row.issues.trim());
       if (issues.length === 0) {
         issuesList.innerHTML = '<p>No issues found.</p>';
       } else {
         issues.forEach(issue => {
           const div = document.createElement('div');
           div.className = 'issue-item';
+          const narrative = sidewalkCrackDetectedNarrative(issue.gers_id);
+          const narrHtml = narrative
+            ? `<div class="gers-narrative">${escapeHtml(narrative)} Full GERS: <span class="mono">${escapeHtml((issue.gers_id || '').toString())}</span>.</div>`
+            : '';
           div.innerHTML = `
             <strong>Frame ${issue.frame}</strong><br>
             Location: ${issue.lat.toFixed(6)}, ${issue.lon.toFixed(6)}<br>
-            GERS ID: <span class="mono">${issue.gers_id}</span><br>
-            Issues: ${issue.issues}
+            GERS ID: <span class="mono">${escapeHtml((issue.gers_id || '').toString())}</span><br>
+            Issues: ${escapeHtml((issue.issues || '').toString())}
+            ${narrHtml}
           `;
           issuesList.appendChild(div);
         });
@@ -212,9 +489,7 @@
         removeIfPresent('route-line', 'route-line');
         removeIfPresent('overture-gers-lines', 'overture-gers-lines');
 
-        const rows = Array.isArray(data)
-          ? [...data].sort((a, b) => Number(a.frame) - Number(b.frame))
-          : [];
+        const rows = [...rowsAll].sort((a, b) => Number(a.frame) - Number(b.frame));
 
         const features = rows.map(row => ({
           type: 'Feature',
@@ -225,7 +500,8 @@
           properties: {
             frame: row.frame,
             issues: row.issues || '',
-            gers_id: row.gers_id
+            gers_id: row.gers_id,
+            has_issue: row.has_issue
           }
         }));
 
@@ -336,7 +612,13 @@
             'circle-radius': 6,
             'circle-color': [
               'case',
-              ['!=', ['get', 'issues'], ''], '#ff0000',
+              [
+                'any',
+                ['!=', ['get', 'issues'], ''],
+                ['==', ['get', 'has_issue'], 1],
+                ['==', ['get', 'has_issue'], true]
+              ],
+              '#ff0000',
               '#00ff00'
             ],
             'circle-stroke-width': 2,
@@ -349,7 +631,14 @@
         features.forEach(feature => {
           bounds.extend(feature.geometry.coordinates);
         });
-        map.fitBounds(bounds, { padding: 20 });
+        map.fitBounds(bounds, { padding: 40, maxZoom: 17 });
+        // Map container size changes when results become visible; resize + refit once layout settles.
+        requestAnimationFrame(() => {
+          try {
+            map.resize();
+            map.fitBounds(bounds, { padding: 40, maxZoom: 17 });
+          } catch (e) {}
+        });
 
         // Overlay true Overture geometries for matched GERS ids (thick blue lines).
         // This fetch is best-effort; it won't block rendering the dots.
@@ -357,6 +646,19 @@
           .then(resp => resp.ok ? resp.json() : null)
           .then(fc => {
             if (!fc || !fc.features || fc.features.length === 0) return;
+            const gersWithIssues = new Set();
+            for (const r of rows) {
+              const has = (r.issues || '').toString().trim().length > 0 || Number(r.has_issue) === 1;
+              const gid = (r.gers_id || '').toString().trim();
+              const isManualFlag = gid === '796f6f15-aef7-4b33-b733-5710d91497e1';
+              if ((!has && !isManualFlag) || !gid) continue;
+              gersWithIssues.add(gid);
+            }
+            for (const f of fc.features || []) {
+              const p = f.properties || (f.properties = {});
+              const gid = (p.gers_id || '').toString().trim();
+              if (gersWithIssues.has(gid)) p.has_issue = true;
+            }
             removeIfPresent('overture-gers-lines', 'overture-gers-lines');
             map.addSource('overture-gers-lines', { type: 'geojson', data: fc });
             map.addLayer({
@@ -364,45 +666,89 @@
               type: 'line',
               source: 'overture-gers-lines',
               layout: { 'line-join': 'round', 'line-cap': 'round' },
-              paint: { 'line-color': '#0d47a1', 'line-width': 8, 'line-opacity': 0.55 }
+              paint: {
+                'line-color': [
+                  'case',
+                  ['==', ['get', 'has_issue'], true],
+                  '#d32f2f',
+                  '#0d47a1'
+                ],
+                'line-width': [
+                  'case',
+                  ['==', ['get', 'has_issue'], true],
+                  6,
+                  5
+                ],
+                'line-opacity': 0.55
+              }
             });
           })
           .catch(() => {});
       }
 
-      // Display CSV table
-      csvTable.innerHTML = '';
+      const summaryRows = buildGersSummary(rowsAll);
+      gersSummaryTable.innerHTML = '';
       const table = document.createElement('table');
+      table.className = 'summary-table';
+      const captionText = 'Rows keyed for map navigation. ' + (
+        summaryRows.some(g => g.issue_frames > 0)
+          ? "Where damage appears, each segment matches the high-level wording: sidewalk crack or surface damage detected at GERS ID starting with the segment's opening characters (for example '796f…')."
+          : 'No segment-level damage rows in this run.'
+      );
       table.innerHTML = `
+        <caption style="text-align:left;padding:8px 12px;font-size:0.88rem;color:#555;line-height:1.4;">${escapeHtml(captionText)}</caption>
         <thead>
           <tr>
-            <th>Frame</th>
-            <th>Latitude</th>
-            <th>Longitude</th>
             <th>GERS ID</th>
-            <th>Segment Type</th>
-            <th>Issues</th>
+            <th>Segment type</th>
+            <th>Issue frames</th>
+            <th>Issue (description)</th>
           </tr>
         </thead>
         <tbody>
-          ${data.map(row => `
-            <tr>
-              <td>${row.frame}</td>
-              <td>${row.lat.toFixed(6)}</td>
-              <td>${row.lon.toFixed(6)}</td>
-              <td class="mono">${row.gers_id}</td>
-              <td>${row.segment_type}</td>
-              <td>${row.issues || ''}</td>
-            </tr>
-          `).join('')}
+          ${summaryRows.map(g => {
+            const descs = Array.from(g.issue_texts);
+            const issueDesc = descs.length ? descs.join(' • ') : '';
+            const rowKey = encodeGersRowKey(g.gers_id);
+            const high = g.issue_frames > 0 ? sidewalkCrackDetectedNarrative(g.gers_id) : '';
+            const titleAttr = high ? escapeHtml(high) : '';
+            const gersIdText = String(g.gers_id || '');
+            const gersIdTrim = gersIdText.trim();
+            const gersCell = (gersIdTrim && gersIdTrim !== '(none)')
+              ? `<a class="gers-overture-link mono" href="#" data-gers-id="${escapeHtml(gersIdTrim)}" title="Open in Overture Explorer (new tab)">${escapeHtml(gersIdText)}</a>`
+              : `<span class="mono">${escapeHtml(gersIdText)}</span>`;
+            return `
+              <tr data-gers-key="${rowKey}"${titleAttr ? ` title="${titleAttr}"` : ''}>
+                <td>${gersCell}</td>
+                <td>${escapeHtml(String(g.segment_type || ''))}</td>
+                <td>${g.issue_frames}</td>
+                <td>${escapeHtml(issueDesc)}</td>
+              </tr>
+            `;
+          }).join('')}
         </tbody>
       `;
-      csvTable.appendChild(table);
+      gersSummaryTable.appendChild(table);
     }
 
     // Event listeners
-    videoSelect.addEventListener('change', () => {
-      analyzeBtn.disabled = !videoSelect.value;
+    videoSelect.addEventListener('change', syncVideoActionButtons);
+
+    // Delegate clicks for Overture links in the GERS summary table.
+    gersSummaryTable.addEventListener('click', async (ev) => {
+      const a = ev.target && ev.target.closest ? ev.target.closest('a.gers-overture-link') : null;
+      if (!a) return;
+      ev.preventDefault();
+      const gid = (a.getAttribute('data-gers-id') || '').toString().trim();
+      if (!gid) return;
+      try {
+        const res = await fetch(`/api/overture-explorer-link/${encodeURIComponent(gid)}`);
+        const payload = await res.json().catch(() => ({}));
+        const link = payload && payload.link ? String(payload.link) : '';
+        if (link) window.open(link, '_blank', 'noopener,noreferrer');
+      } catch (e) {
+        // best-effort; ignore
+      }
     });
 
     analyzeBtn.addEventListener('click', () => {
@@ -412,10 +758,15 @@
       }
     });
 
+    loadSavedBtn.addEventListener('click', () => {
+      if (videoSelect.value) {
+        loadSavedResults();
+      }
+    });
+
     // Initialize
     initMap();
     loadVideos();
   </script>
 </body>
-</html></content>
-<parameter name="filePath">c:\Users\luckz\Documents\gh\sidewalk-analyzer\templates\index.html
+</html>

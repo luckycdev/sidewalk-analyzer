@@ -31,6 +31,7 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 MAPILLARY_IMAGES_URL = "https://graph.mapillary.com/images"
 DEFAULT_OVERTURE_PADDING_M = 120.0
 DEFAULT_OVERTURE_MAX_MATCH_M = 220.0
+OVERTURE_ID_LOOKUP_URL = "https://geocoder.bradr.dev/id/{gers_id}"
 
 
 def load_dotenv_file(path: Path) -> None:
@@ -49,6 +50,65 @@ def load_dotenv_file(path: Path) -> None:
 
 
 load_dotenv_file(Path(__file__).with_name(".env"))
+
+APP_ROOT = Path(__file__).resolve().parent
+
+
+def resolve_project_media_path(path_str: str) -> Path | None:
+    """Resolve a relative or absolute path to an existing file under APP_ROOT."""
+    raw = path_str.strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = (APP_ROOT / raw).resolve()
+    else:
+        try:
+            candidate = candidate.resolve()
+        except OSError:
+            return None
+    try:
+        candidate.relative_to(APP_ROOT)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def results_artifact_paths(sequence_id: str) -> tuple[Path, Path]:
+    """Per-sequence results CSV and GERS GeoJSON paths (may not exist yet)."""
+    safe = Path(sequence_id).name  # basename only
+    return (
+        APP_ROOT / f"results_{safe}.csv",
+        APP_ROOT / f"results_{safe}.gers.geojson",
+    )
+
+
+def get_overture_explorer_link_via_api(
+    gers_id: str, *, theme: str = "transportation", otype: str = "segment", zoom: float = 16.75
+) -> str:
+    """
+    Given a GERS/Overture segment id, generate an Overture Explorer deep link by first
+    resolving the feature bbox using a lightweight public lookup API.
+    """
+    gid = (gers_id or "").strip()
+    if not gid:
+        raise ValueError("gers_id is required")
+
+    url = OVERTURE_ID_LOOKUP_URL.format(gers_id=gid)
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    bbox = data.get("bbox") or {}
+    try:
+        lat = (float(bbox["ymin"]) + float(bbox["ymax"])) / 2.0
+        lon = (float(bbox["xmin"]) + float(bbox["xmax"])) / 2.0
+    except Exception as exc:
+        raise ValueError("ID found but no valid bounding box returned") from exc
+
+    return (
+        "https://explore.overturemaps.org/"
+        f"?mode=explore&feature={theme}.{otype}.{gid}#{zoom}/{lat:.6f}/{lon:.6f}"
+    )
 
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -127,7 +187,10 @@ def _extract_json_array(text: str) -> list[dict[str, Any]]:
     text = text.strip()
     try:
         parsed = json.loads(text)
-        return parsed if isinstance(parsed, list) else []
+        if isinstance(parsed, list):
+            return parsed
+        coerced = _coerce_segment_list(parsed)
+        return coerced
     except json.JSONDecodeError:
         pass
 
@@ -136,9 +199,67 @@ def _extract_json_array(text: str) -> list[dict[str, Any]]:
         return []
     try:
         parsed = json.loads(match.group(0))
-        return parsed if isinstance(parsed, list) else []
+        if isinstance(parsed, list):
+            return parsed
+        return _coerce_segment_list(parsed)
     except json.JSONDecodeError:
         return []
+
+
+def _pegasus_message_to_text(message: Any) -> str:
+    """
+    Bedrock/TwelveLabs responses sometimes return `message` as a string, but other times as
+    structured JSON (dict/list). Normalize to a string suitable for `_extract_json_array`.
+    """
+    if message is None:
+        return ""
+    if isinstance(message, str):
+        return message
+    if isinstance(message, (dict, list)):
+        try:
+            return json.dumps(message, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(message)
+    return str(message)
+
+
+def _coerce_segment_list(value: Any) -> list[dict[str, Any]]:
+    """Turn assorted Pegasus payload shapes into a list[dict] of segment-like objects."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        for key in ("segments", "detections", "results", "items", "output"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                return [item for item in nested if isinstance(item, dict)]
+        # Sometimes the model returns a single object instead of a list.
+        if any(k in value for k in ("start", "end", "time")):
+            return [value]
+    return []
+
+
+def _parse_pegasus_segments(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Parse segments from a Pegasus/Bedrock JSON wrapper.
+
+    Primary path: `message` is JSON text containing an array of segments.
+    Fallbacks: structured dict/list shapes.
+    """
+    message = result.get("message")
+    segments = _extract_json_array(_pegasus_message_to_text(message))
+    if segments:
+        return [item for item in segments if isinstance(item, dict)]
+
+    # Common alternate top-level keys
+    for key in ("segments", "detections", "results", "output"):
+        nested = result.get(key)
+        coerced = _coerce_segment_list(nested)
+        if coerced:
+            return coerced
+
+    return _coerce_segment_list(result)
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -230,7 +351,10 @@ def _bedrock_pegasus_invoke(prompt: str, *, s3_uri: str) -> dict[str, Any]:
         },
     }
     response = bedrock.invoke_model(modelId=MODEL_ID, body=json.dumps(body))
-    return json.loads(response["body"].read())
+    raw_body = response["body"].read()
+    if isinstance(raw_body, (bytes, bytearray)):
+        raw_body = raw_body.decode("utf-8")
+    return json.loads(raw_body)
 
 
 def verify_segments(detections: list[dict[str, Any]], *, s3_uri: str) -> list[dict[str, Any]]:
@@ -274,7 +398,7 @@ Checks:
 """.strip()
 
     result = _bedrock_pegasus_invoke(verify_prompt, s3_uri=s3_uri)
-    raw_message = result.get("message", "")
+    raw_message = _pegasus_message_to_text(result.get("message"))
     rows = _extract_json_array(raw_message)
 
     by_segment: dict[int, list[dict[str, Any]]] = {}
@@ -308,6 +432,12 @@ Checks:
             det["damage_types"] = sorted(merged_types)
             det["confidence"] = max(float(det.get("confidence", 0.0)), avg_conf)
             kept.append(det)
+
+    # If verification didn't return enough structured rows to meaningfully evaluate checks,
+    # don't "wipe" detections entirely. This commonly happens when the verify response isn't JSON.
+    expected_rows = len(detections) * 3
+    if detections and not kept and len(rows) < max(1, expected_rows // 2):
+        return detections
 
     return kept
 
@@ -833,8 +963,7 @@ def _run_analysis_job(run_id: str, video_path: str) -> None:
 
         # Step 2: Detect segments (improved prompt + verification from `app_copyy.py`).
         result = _bedrock_pegasus_invoke(PEGASUS_PROMPT, s3_uri=s3_uri)
-        raw_message = result.get("message", "")
-        segments = _extract_json_array(raw_message)
+        segments = _parse_pegasus_segments(result)
         segments = normalize_and_merge_detections(segments)
         segments = [seg for seg in segments if float(seg.get("confidence") or 0.0) >= MIN_SEGMENT_CONFIDENCE]
 
@@ -862,8 +991,10 @@ def _run_analysis_job(run_id: str, video_path: str) -> None:
                 if a == b and float(seg.get("confidence") or 0.0) > float(existing.get("confidence") or 0.0):
                     best_by_frame[t] = seg
 
-        # Step 5: Load CSV
-        csv_path = os.path.join("csvs", f"{sequence_id}.csv")
+        # Step 5: Load track CSV (GPS per frame)
+        csv_path = APP_ROOT / "csvs" / f"{sequence_id}.csv"
+        if not csv_path.is_file():
+            raise FileNotFoundError(f"Track CSV not found: {csv_path.relative_to(APP_ROOT)}")
         df = pd.read_csv(csv_path)
 
         # Step 6: Download Overture data
@@ -910,9 +1041,8 @@ def _run_analysis_job(run_id: str, video_path: str) -> None:
                 if desc:
                     frame_issues[int(t)].append(desc)
 
-        rows = []
-        # Export unique matched Overture geometries so the UI can draw the true GERS lines.
-        gers_feature_map: dict[str, dict[str, Any]] = {}
+        # Step 7a: Nearest Overture match per frame (compute once; reuse for rows + GeoJSON export).
+        nearest_rows: list[dict[str, Any]] = []
         for i in range(len(df)):
             row = df.iloc[i]
             p = Point(row["long"], row["lat"])
@@ -926,6 +1056,22 @@ def _run_analysis_job(run_id: str, video_path: str) -> None:
             else:
                 best = gdf.loc[gdf["dist"].idxmin()]
 
+            nearest_rows.append({"i": i, "df_row": row, "best": best})
+
+        gers_has_issue: dict[str, bool] = {}
+        for item in nearest_rows:
+            issues = " | ".join(frame_issues[item["i"]]) if frame_issues[item["i"]] else ""
+            gers_id = str(item["best"].get("id") or "")
+            if issues.strip():
+                gers_has_issue[gers_id] = True
+
+        rows = []
+        gers_feature_map: dict[str, dict[str, Any]] = {}
+        for item in nearest_rows:
+            i = item["i"]
+            row = item["df_row"]
+            best = item["best"]
+
             issues = " | ".join(frame_issues[i]) if frame_issues[i] else ""
             gers_id = str(best.get("id") or "")
 
@@ -936,28 +1082,44 @@ def _run_analysis_job(run_id: str, video_path: str) -> None:
                         gers_feature_map[gers_id] = {
                             "type": "Feature",
                             "geometry": shapely_mapping(geom),
-                            "properties": {"gers_id": gers_id},
+                            "properties": {
+                                "gers_id": gers_id,
+                                "has_issue": bool(gers_has_issue.get(gers_id)),
+                            },
                         }
                     except Exception:
-                        # If mapping fails for any geometry, just skip exporting it.
                         pass
 
-            rows.append({
-                "frame": i,
-                "lat": row["lat"],
-                "lon": row["long"],
-                "gers_id": gers_id,
-                "segment_type": best.get("subclass", ""),
-                "issues": issues
-            })
+            rows.append(
+                {
+                    "frame": i,
+                    "lat": row["lat"],
+                    "lon": row["long"],
+                    "gers_id": gers_id,
+                    "segment_type": (best.get("subclass", "") or "").strip() or "footway",
+                    "issues": issues,
+                    "has_issue": 1 if issues.strip() else 0,
+                }
+            )
+
+        for feature in gers_feature_map.values():
+            props = feature.get("properties")
+            if isinstance(props, dict):
+                gid = str(props.get("gers_id") or "")
+                props["has_issue"] = bool(gers_has_issue.get(gid))
 
         results = rows
         gers_geojson = {"type": "FeatureCollection", "features": list(gers_feature_map.values())}
+
+        out_csv, out_gers = results_artifact_paths(sequence_id)
+        pd.DataFrame(results).to_csv(out_csv, index=False)
+        out_gers.write_text(json.dumps(gers_geojson), encoding="utf-8")
 
         with PIPELINE_LOCK:
             PIPELINE_RUNS[run_id]["status"] = "completed"
             PIPELINE_RUNS[run_id]["results"] = results
             PIPELINE_RUNS[run_id]["gers_geojson"] = gers_geojson
+            PIPELINE_RUNS[run_id]["saved_csv"] = str(out_csv.relative_to(APP_ROOT))
 
     except Exception as exc:
         with PIPELINE_LOCK:
@@ -967,15 +1129,20 @@ def _run_analysis_job(run_id: str, video_path: str) -> None:
 
 @app.get("/api/videos")
 def api_videos():
-    videos = [f for f in os.listdir('.') if f.endswith('.mp4')]
-    return jsonify({"videos": videos})
+    items: list[dict[str, Any]] = []
+    for f in sorted(APP_ROOT.glob("*.mp4"), key=lambda p: p.name.lower()):
+        out_csv, _ = results_artifact_paths(f.stem)
+        rel = str(f.relative_to(APP_ROOT))
+        items.append({"path": rel, "has_saved_results": out_csv.is_file()})
+    return jsonify({"videos": items})
 
 
 @app.post("/api/analyze")
 def api_analyze():
     payload = request.get_json(silent=True) or {}
     video_path = str(payload.get("video_path") or "").strip()
-    if not video_path or not os.path.exists(video_path):
+    resolved = resolve_project_media_path(video_path)
+    if not resolved:
         return jsonify({"error": "Invalid video path"}), 400
 
     run_id = uuid.uuid4().hex[:12]
@@ -984,11 +1151,59 @@ def api_analyze():
 
     thread = threading.Thread(
         target=_run_analysis_job,
-        args=(run_id, video_path),
+        args=(run_id, str(resolved)),
         daemon=True,
     )
     thread.start()
     return jsonify({"run_id": run_id, "status": "running"})
+
+
+@app.post("/api/load-saved-results")
+def api_load_saved_results():
+    """Load a prior run from results_<sequence_id>.csv (+ optional .gers.geojson) into memory."""
+    payload = request.get_json(silent=True) or {}
+    video_path = str(payload.get("video_path") or "").strip()
+    resolved = resolve_project_media_path(video_path)
+    if not resolved:
+        return jsonify({"error": "Invalid video path"}), 400
+
+    sequence_id = resolved.stem
+    out_csv, out_gers = results_artifact_paths(sequence_id)
+    if not out_csv.is_file():
+        return jsonify({"error": f"No saved results for this sequence ({out_csv.name} missing)."}), 404
+
+    try:
+        df = pd.read_csv(out_csv).fillna("")
+        # `to_json` ensures native Python scalars (CSV read often yields numpy types).
+        results = json.loads(df.to_json(orient="records"))
+        if not isinstance(results, list):
+            raise ValueError("unexpected records shape")
+    except Exception as exc:
+        return jsonify({"error": f"Failed to read results CSV: {exc}"}), 500
+
+    gers_geojson: dict[str, Any]
+    if out_gers.is_file():
+        try:
+            gers_geojson = json.loads(out_gers.read_text(encoding="utf-8"))
+            if not isinstance(gers_geojson, dict):
+                raise ValueError("GeoJSON root must be an object")
+        except Exception as exc:
+            return jsonify({"error": f"Invalid GERS GeoJSON sidecar: {exc}"}), 500
+    else:
+        gers_geojson = {"type": "FeatureCollection", "features": []}
+
+    run_id = uuid.uuid4().hex[:12]
+    with PIPELINE_LOCK:
+        PIPELINE_RUNS[run_id] = {
+            "status": "completed",
+            "created_at": datetime.now(tz=timezone.utc).isoformat(),
+            "results": results,
+            "gers_geojson": gers_geojson,
+            "source": "saved_csv",
+            "saved_csv": str(out_csv.relative_to(APP_ROOT)),
+        }
+
+    return jsonify({"run_id": run_id, "status": "completed"})
 
 
 @app.get("/api/status/<run_id>")
@@ -1009,6 +1224,24 @@ def api_results(run_id: str):
     if run.get("status") != "completed":
         return jsonify({"error": "run not completed", "status": run.get("status")}), 409
     return jsonify(run.get("results") or [])
+
+
+@app.get("/api/overture-explorer-link/<path:gers_id>")
+def api_overture_explorer_link(gers_id: str):
+    theme = (request.args.get("theme") or "transportation").strip() or "transportation"
+    otype = (request.args.get("otype") or "segment").strip() or "segment"
+    try:
+        zoom = float(request.args.get("zoom") or 16.75)
+    except (TypeError, ValueError):
+        zoom = 16.75
+
+    try:
+        link = get_overture_explorer_link_via_api(gers_id, theme=theme, otype=otype, zoom=zoom)
+        return jsonify({"gers_id": (gers_id or "").strip(), "link": link})
+    except requests.RequestException as exc:
+        return jsonify({"error": f"API lookup failed: {exc}"}), 502
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.get("/api/gers-geojson/<run_id>")
@@ -1046,7 +1279,7 @@ def api_overture_sidewalks():
 
 @app.get("/api/csv-files")
 def api_csv_files():
-    csv_files = [f for f in os.listdir('.') if f.startswith('results_') and f.endswith('.csv')]
+    csv_files = sorted(p.name for p in APP_ROOT.glob("results_*.csv"))
     return jsonify({"csv_files": csv_files})
 
 
@@ -1054,14 +1287,20 @@ def api_csv_files():
 def api_load_csv(filename):
     if not filename.startswith('results_') or not filename.endswith('.csv'):
         return jsonify({"error": "Invalid filename"}), 400
-    
+
+    path = (APP_ROOT / filename).resolve()
     try:
-        df = pd.read_csv(filename)
-        # Replace NaN with empty strings for JSON compatibility
-        df = df.fillna('')
-        data = df.to_dict('records')
-        return jsonify({"data": data})
-    except Exception as exc:
+        path.relative_to(APP_ROOT)
+    except ValueError:
+        return jsonify({"error": "Invalid filename"}), 400
+
+    if not path.is_file():
+        return jsonify({"error": "File not found"}), 404
+
+    try:
+        df = pd.read_csv(path)
+        df = df.fillna("")
+        data = df.to_dict("records")
         return jsonify({"data": data})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

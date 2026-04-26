@@ -1,89 +1,71 @@
-# 🛣️ Sidewalk Analyzer
+# Sidewalk Analyzer
 
-## 📌 The Problem
-Traditional sidewalk and pedestrian infrastructure assessment relies on manual inspection, surveys, or slow image review workflows. These methods are:
+A small Flask app for **detecting sidewalk and path surface damage** in walking-style videos. It sends each video to **Amazon Bedrock** (TwelveLabs **Pegasus**), reads per-frame GPS from a companion CSV, matches locations to **Overture Maps** sidewalk segments, and shows results on a **Mapbox** map with optional GeoJSON export.
 
-- Labor-intensive and time-consuming  
-- Subjective and inconsistent across evaluators  
-- Difficult to scale across large urban or operational areas  
+Supporting scripts help build CSV tracks from Mapillary sequences and batch-run analysis outside the web UI.
 
-For defense, intelligence, and emergency response missions, this creates a critical data gap in:
+## What it does
 
-- Mobility planning (troops and evacuation routes)  
-- Accessibility and humanitarian operations  
-- Rapid infrastructure assessment in dynamic environments  
+1. **Video analysis** — You pick an `.mp4` in the project directory. The app uploads it to S3, invokes Pegasus with a structured prompt, optionally **verifies** candidate damage windows, then maps detections onto frame indices.
+2. **Geospatial join** — For each frame, it uses `csvs/<basename>.csv` (same basename as the video) with at least `lat` and `long` columns, downloads Overture **segment** data for the track bounding box, and associates each point with the nearest sidewalk-related segment (and GERS-style segment ids where available).
+3. **UI** — `/` lists local videos, runs analysis, polls status, shows a summary table, and draws the path plus segment styling on a Mapbox GL map.
+4. **Mapillary search** (optional) — `POST /api/search` loads street-level images near a point and enriches them with nearest sidewalk segment metadata; requires a Mapillary token.
 
+## Requirements
 
-## 🚀 Solution: Sidewalk Analyzer
-**Sidewalk Analyzer** is an AI-driven pipeline that:
+- **Python** 3.10+ recommended (GeoPandas, Overture, DuckDB stack).
+- **AWS account** with credentials configured (e.g. `aws configure` or environment variables) and permission for:
+  - **S3** — upload objects to your chosen bucket.
+  - **Bedrock** — invoke the Pegasus model you configure.
+- **Mapbox** [access token](https://account.mapbox.com/) for the map on `/` and `/pipeline`.
+- **Per-sequence CSV** — For each `<id>.mp4`, a file `csvs/<id>.csv` with columns including `lat` and `long` (and any other columns you use downstream). The video basename must match the CSV basename.
+- **FFmpeg** — Useful if you use `mp4_creator.py` or other MoviePy-based tooling to build videos locally.
 
-- Detects sidewalks from Mapillary datasets  
-- Computes quantitative sidewalk width and features  
-- Classifies infrastructure (e.g., narrow / standard / wide)  
-- Uses Pegasus summarization to generate actionable insights  
+## Setup
 
-➡️ This transforms raw visual data into structured, ready-to-use intelligence.
+```bash
+cd sidewalk-analyzer
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
 
+Create a `.env` file in the project root (the app loads it automatically). Example keys:
 
-## 🌍 Why It Matters
-Sidewalk and pedestrian infrastructure data is historically incomplete and difficult to scale, limiting planning and accessibility efforts.
+| Variable | Purpose |
+|----------|---------|
+| `MAPBOX_ACCESS_TOKEN` | Required for map tiles and the main UI. |
+| `MAPILLARY_ACCESS_TOKEN` | Required for Mapillary-backed `/api/search`. |
+| `AWS_BUCKET_NAME` | S3 bucket for uploaded videos (defaults exist in code; override for your account). |
+| `AWS_REGION` | Region for S3 and Bedrock (default `us-east-1`). |
+| `AWS_MODEL_ID` | Bedrock model id for Pegasus (default `twelvelabs.pegasus-1-2-v1:0`). |
+| `AWS_BUCKET_OWNER` | Account id for `bucketOwner` in the Bedrock media payload. |
+| `MIN_SEGMENT_CONFIDENCE` | Drop segments below this confidence (default `0.7`). |
+| `VERIFY_SEGMENTS` | Set `0` / `false` to skip the second-pass verification calls. |
+| `VERIFY_MIN_HITS`, `VERIFY_MIN_AVG_CONF` | Tuning for verification. |
+| `OVERTURE_LOOKUP_PADDING_M`, `OVERTURE_LOOKUP_MAX_MATCH_M` | Used when enriching Mapillary results with Overture matches. |
 
-Sidewalk Analyzer addresses this gap by delivering:
+Use standard AWS SDK environment variables or shared credentials for authentication (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, session token if applicable).
 
-- Automated, scalable infrastructure intelligence  
-- Faster decision-making for critical operations  
-- Improved mobility, safety, and accessibility outcomes  
+## Run the web app
 
-💡 **Impact:**  
-Reduces infrastructure assessment from hours of manual review to seconds of automated analysis — enabling up to **50× faster geospatial insight generation**.
+```bash
+source .venv/bin/activate
+python app.py
+```
 
+Open `http://127.0.0.1:5000/` (Flask default). Use **Analyze** on a video whose matching CSV already exists under `csvs/`.
 
+Health check: `GET http://127.0.0.1:5000/api/health`
 
-## ⚙️ System Pipeline
+## Other files in this repo
 
-flowchart LR
-    A[Mapillary Images] --> B[Video Stitching]
-    B --> C[Sidewalk Detection]
-    C --> D[Feature Extraction & Classification]
-    D --> E[Pegasus Summarization]
-    E --> F[Structured Output + Map Visualization]
+- **`aws_test.py`** — Standalone script oriented around batch CSV/video processing against S3 and Bedrock; edit the config block at the top for bucket, region, and owner, or align with your `.env` patterns.
+- **`csv_creator.py`**, **`mp4_creator.py`** — Helpers for building track CSVs and MP4s from Mapillary-style inputs.
+- **`pegasus_processor.py`** — Pegasus-related processing utilities.
 
+For downloading Mapillary assets outside this repo, the [mapillary_download](https://github.com/Stefal/mapillary_download) project is a common reference.
 
-## ⚙️ How It Works
+## Pipeline page (`/pipeline`)
 
-### ☁️ AWS Setup
-1. Create an AWS account  
-2. Create an S3 bucket for data storage  
-3. Create an IAM user with the following permissions:
-   - `AmazonS3FullAccess`
-   - `AmazonBedrockFullAccess`  
-4. Configure AWS CLI using the IAM user's access key:
-   ```bash
-   aws configure
-
-## 📊 Metrics
-
-### 🚀 Impact
-- **100% increase in data availability**  
-  - No prior sidewalk quality data existed per GERS ID  
-  - Sidewalk Analyzer generates structured, usable data from raw imagery  
-
----
-
-### 🎯 Accuracy
-- **99.6% accuracy**
-  - Validated against manually reviewed sidewalk video ground truth  
-
----
-
-### ⚡ Performance
-- Converts image sequences into **1 FPS video** for efficient processing  
-- Reduces manual review time from hours to seconds  
-
----
-
-### 📦 Data Source
-- Image data sourced from **Mapillary**  
-
-https://github.com/Stefal/mapillary_download
-
+The `/pipeline` route starts an optional **full pipeline** implemented in a Python package `sidewalk_analyzer` (`load_settings`, `run_pipeline`). That package is **not** included in this repository; if you do not have it installed, starting a pipeline run from the UI will fail on import. The main **`/`** flow (upload → Pegasus → Overture join → map) does not depend on that package.
