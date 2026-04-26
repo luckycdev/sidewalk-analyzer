@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Results map</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      html, body { height: 100%; margin: 0; }
+      #map { height: 100%; width: 100%; }
+      .panel {
+        position: absolute;
+        z-index: 1000;
+        top: 10px;
+        left: 10px;
+        background: rgba(255,255,255,0.95);
+        border: 1px solid #e5e5e5;
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+        max-width: 460px;
+      }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+      input { padding: 6px 8px; border-radius: 10px; border: 1px solid #d0d0d0; width: 320px; max-width: 100%; }
+      button { padding: 6px 10px; border-radius: 10px; border: 1px solid #d0d0d0; background: #fff; cursor: pointer; }
+      .muted { color: #666; font-size: 12px; }
+      .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #ddd; }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div class="panel">
+      <div><strong>Results map</strong></div>
+      <div class="muted">Green = no damage for that frame in JSON. Red = damage.</div>
+      <div class="row">
+        <span class="pill" id="count">Loading…</span>
+        <span class="pill" id="status"></span>
+      </div>
+      <div class="row">
+        <label>CSV</label>
+        <input id="csv" />
+      </div>
+      <div class="row">
+        <label>JSON</label>
+        <input id="json" />
+      </div>
+      <div class="row">
+        <button id="reload">Reload</button>
+        <span class="muted">Tip: JSON optional.</span>
+      </div>
+    </div>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script>
+      const initialCsv = {{ (csv_name or "")|tojson }};
+      const initialJson = {{ (json_name or "")|tojson }};
+
+      const csvEl = document.getElementById('csv');
+      const jsonEl = document.getElementById('json');
+      const statusEl = document.getElementById('status');
+      const countEl = document.getElementById('count');
+
+      csvEl.value = initialCsv;
+      jsonEl.value = initialJson;
+
+      const map = L.map('map', { preferCanvas: true });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 20,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+
+      let layerGroup = L.layerGroup().addTo(map);
+
+      function frameHasDamage(row) {
+        if (!row || typeof row !== 'object') return false;
+        if (row.has_issue === 1 || row.has_issue === '1' || row.has_issue === true) return true;
+        const sev = (row.severity || '').toString().trim();
+        if (sev) return true;
+        return false;
+      }
+
+      async function loadJsonDamageFrames(jsonName) {
+        if (!jsonName) return new Set();
+        const resp = await fetch(`/api/results/file?name=${encodeURIComponent(jsonName)}`);
+        if (!resp.ok) {
+          throw new Error(`Failed to load JSON (${resp.status})`);
+        }
+        const data = await resp.json();
+        const frames = new Set();
+        if (Array.isArray(data)) {
+          for (const row of data) {
+            const frame = Number(row && row.frame);
+            if (!Number.isFinite(frame)) continue;
+            if (frameHasDamage(row)) frames.add(frame);
+          }
+        }
+        return frames;
+      }
+
+      async function loadCsvRows(csvName) {
+        const resp = await fetch(`/api/results/file?name=${encodeURIComponent(csvName)}`);
+        if (!resp.ok) {
+          throw new Error(`Failed to load CSV (${resp.status})`);
+        }
+        const text = await resp.text();
+        const parsed = Papa.parse(text, { header: true, dynamicTyping: true, skipEmptyLines: true });
+        if (parsed.errors && parsed.errors.length) {
+          console.warn(parsed.errors);
+        }
+        return parsed.data || [];
+      }
+
+      function colorFor(frame, damageFrames) {
+        return damageFrames.has(frame) ? '#e53935' : '#1b5e20';
+      }
+
+      function popupHtml(r, damageFrames) {
+        const frame = Number(r.frame);
+        const has = damageFrames.has(frame);
+        const gers = (r.gers_id || '').toString();
+        const dist = (r.gers_distance_m ?? '').toString();
+        const sev = (r.severity || '').toString();
+        const desc = (r.description || '').toString();
+        return `
+          <div style="font-family: ui-sans-serif, system-ui; min-width: 240px;">
+            <div><strong>Frame:</strong> ${frame}</div>
+            <div><strong>Status:</strong> ${has ? 'DAMAGE' : 'OK'}</div>
+            <div><strong>Lat/Lon:</strong> ${r.lat}, ${r.long}</div>
+            <div><strong>GERS:</strong> ${gers || '(none)'} ${dist ? `(${dist} m)` : ''}</div>
+            ${sev ? `<div><strong>Severity:</strong> ${sev}</div>` : ''}
+            ${desc ? `<div style="margin-top:6px;"><strong>Note:</strong> ${desc}</div>` : ''}
+          </div>
+        `;
+      }
+
+      async function render() {
+        const csvName = (csvEl.value || '').trim();
+        const jsonName = (jsonEl.value || '').trim();
+        if (!csvName) {
+          statusEl.textContent = 'Enter a CSV name.';
+          countEl.textContent = '0 points';
+          return;
+        }
+
+        statusEl.textContent = 'Loading…';
+        countEl.textContent = '…';
+        layerGroup.clearLayers();
+
+        const [rows, damageFrames] = await Promise.all([
+          loadCsvRows(csvName),
+          loadJsonDamageFrames(jsonName).catch(() => new Set()) // JSON optional
+        ]);
+
+        let ok = 0;
+        let bad = 0;
+        const latlngs = [];
+
+        for (const r of rows) {
+          const lat = Number(r.lat);
+          const lon = Number(r.long);
+          const frame = Number(r.frame);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(frame)) continue;
+
+          const isBad = damageFrames.has(frame);
+          if (isBad) bad++; else ok++;
+
+          const c = colorFor(frame, damageFrames);
+          const marker = L.circleMarker([lat, lon], {
+            radius: 4,
+            color: c,
+            fillColor: c,
+            fillOpacity: 0.9,
+            weight: 1
+          });
+          marker.bindPopup(popupHtml(r, damageFrames));
+          marker.addTo(layerGroup);
+          latlngs.push([lat, lon]);
+        }
+
+        if (latlngs.length) {
+          map.fitBounds(latlngs, { padding: [30, 30] });
+        } else {
+          map.setView([0, 0], 2);
+        }
+
+        countEl.textContent = `${ok + bad} points`;
+        statusEl.textContent = `OK ${ok} • Damage ${bad}`;
+      }
+
+      document.getElementById('reload').addEventListener('click', () => {
+        const params = new URLSearchParams();
+        if (csvEl.value.trim()) params.set('csv', csvEl.value.trim());
+        if (jsonEl.value.trim()) params.set('json', jsonEl.value.trim());
+        history.replaceState(null, '', '/results-map?' + params.toString());
+        render().catch(err => {
+          console.error(err);
+          statusEl.textContent = err.message || 'Failed to render';
+        });
+      });
+
+      render().catch(err => {
+        console.error(err);
+        statusEl.textContent = err.message || 'Failed to render';
+      });
+    </script>
+  </body>
+</html>
+

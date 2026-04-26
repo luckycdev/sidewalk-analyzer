@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -57,6 +58,443 @@ BUCKET_OWNER = os.getenv("AWS_BUCKET_OWNER", "564203970240")
 
 s3 = boto3.client("s3", region_name=REGION)
 bedrock = boto3.client("bedrock-runtime", region_name=REGION)
+
+# Tuning knobs (env-overridable; aligned with `aws_test.py`)
+MIN_SEGMENT_CONFIDENCE = float(os.getenv("MIN_SEGMENT_CONFIDENCE", "0.7"))
+VERIFY_SEGMENTS = os.getenv("VERIFY_SEGMENTS", "1").strip().lower() not in {"0", "false", "no"}
+VERIFY_MIN_HITS = int(os.getenv("VERIFY_MIN_HITS", "2"))  # out of 3 (start/mid/end)
+VERIFY_MIN_AVG_CONF = float(os.getenv("VERIFY_MIN_AVG_CONF", "0.7"))
+
+
+PEGASUS_PROMPT = """
+You are analyzing a walking video where the camera points at the pedestrian path.
+
+Task: find time ranges where SIDEWALK / PEDESTRIAN PATH SURFACE DAMAGE is clearly visible.
+
+Only flag when the sidewalk surface is visible enough to judge condition. Do NOT flag:
+- normal joints/expansion seams
+- mild texture/grain
+- shadows, lighting changes, wet patches
+- camera blur or motion
+- road/asphalt damage unless it is on the sidewalk/path surface
+- grass/dirt edges unless it creates a clear tripping hazard on the walking surface
+
+Damage types to consider (examples):
+- crack (wide / alligator / long)
+- spalling / missing chunks
+- pothole / hole
+- heave / uplift / vertical displacement (trip hazard)
+- severe unevenness / buckling
+- broken slab / collapsed edge
+- obstruction hazard (if on path surface)
+
+Output requirements:
+- Return ONLY valid JSON (no markdown, no explanation).
+- Output is an array of segments.
+- Segments MUST be non-overlapping and sorted by start time.
+- Use integer seconds for start/end (inclusive). If damage is visible for a single moment, set start=end.
+- Keep segments coarse: if the same damage persists across adjacent seconds, produce ONE segment.
+
+Severity rubric:
+- low: visible defect but minor trip risk (hairline/wear, small cracks)
+- medium: noticeable defect that could trip or impede mobility (wider cracks, small heave, moderate spalling)
+- high: clear hazard likely to trip or block mobility (large holes, big heave, major breakup)
+
+For each segment include:
+{
+  "start": int,
+  "end": int,
+  "severity": "low" | "medium" | "high",
+  "damage_types": string[],
+  "confidence": number,  // 0.0 to 1.0
+  "description": string  // short, specific visual cues (e.g., "broken slab with 2-3cm heave")
+}
+
+Return [] if no clear sidewalk damage is visible.
+""".strip()
+
+
+def _extract_json_array(text: str) -> list[dict[str, Any]]:
+    """Best-effort extraction of the first JSON array in a model response."""
+    if not text:
+        return []
+    text = text.strip()
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, list) else []
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\[[\s\S]*\]", text)
+    if not match:
+        return []
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp_float(value: Any, default: float, lo: float, hi: float) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, numeric))
+
+
+def normalize_and_merge_detections(detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate + merge overlapping/adjacent segments to reduce duplicates."""
+    normalized: list[dict[str, Any]] = []
+    for det in detections:
+        if not isinstance(det, dict):
+            continue
+        start = _as_int(det.get("start"), -1)
+        end = _as_int(det.get("end"), -1)
+        if start < 0 or end < 0:
+            continue
+        if end < start:
+            start, end = end, start
+
+        severity = str(det.get("severity") or "").strip().lower()
+        if severity not in {"low", "medium", "high"}:
+            severity = "medium"
+
+        damage_types = det.get("damage_types")
+        if isinstance(damage_types, list):
+            damage_types_clean = [str(item).strip().lower() for item in damage_types if str(item).strip()]
+        else:
+            damage_types_clean = []
+
+        confidence = _clamp_float(det.get("confidence"), 0.5, 0.0, 1.0)
+        description = str(det.get("description") or "").strip()
+        if not description:
+            description = "Sidewalk damage visible"
+
+        normalized.append(
+            {
+                "start": start,
+                "end": end,
+                "severity": severity,
+                "damage_types": damage_types_clean,
+                "confidence": confidence,
+                "description": description,
+            }
+        )
+
+    normalized.sort(key=lambda d: (d["start"], d["end"]))
+    if not normalized:
+        return []
+
+    severity_rank = {"low": 0, "medium": 1, "high": 2}
+    merged: list[dict[str, Any]] = [normalized[0]]
+    for det in normalized[1:]:
+        prev = merged[-1]
+        if det["start"] <= prev["end"] + 1:
+            prev["end"] = max(prev["end"], det["end"])
+            if severity_rank[det["severity"]] > severity_rank[prev["severity"]]:
+                prev["severity"] = det["severity"]
+            prev["confidence"] = max(float(prev["confidence"]), float(det["confidence"]))
+            prev_types = set(prev.get("damage_types") or [])
+            det_types = set(det.get("damage_types") or [])
+            prev["damage_types"] = sorted(prev_types | det_types)
+            if len(det.get("description", "")) > len(prev.get("description", "")):
+                prev["description"] = det["description"]
+            continue
+        merged.append(det)
+
+    return merged
+
+
+def _bedrock_pegasus_invoke(prompt: str, *, s3_uri: str) -> dict[str, Any]:
+    body = {
+        "inputPrompt": prompt,
+        "mediaSource": {
+            "s3Location": {
+                "uri": s3_uri,
+                "bucketOwner": BUCKET_OWNER,
+            }
+        },
+    }
+    response = bedrock.invoke_model(modelId=MODEL_ID, body=json.dumps(body))
+    return json.loads(response["body"].read())
+
+
+def verify_segments(detections: list[dict[str, Any]], *, s3_uri: str) -> list[dict[str, Any]]:
+    """
+    Ask Pegasus to confirm damage at representative timestamps for each segment.
+    Keeps segments where >= VERIFY_MIN_HITS timestamps are confirmed as damage and avg confidence is high enough.
+    """
+    if not detections:
+        return []
+
+    checks: list[dict[str, Any]] = []
+    for idx, det in enumerate(detections):
+        start = int(det["start"])
+        end = int(det["end"])
+        mid = (start + end) // 2
+        checks.append({"segment_index": idx, "t": start})
+        checks.append({"segment_index": idx, "t": mid})
+        checks.append({"segment_index": idx, "t": end})
+
+    verify_prompt = f"""
+You are verifying whether sidewalk/path SURFACE DAMAGE is truly visible at specific timestamps.
+
+Rules:
+- Be conservative: if you cannot clearly see sidewalk damage, set damage=false.
+- Ignore normal seams/joints, shadows, blur, wetness, and road-only damage.
+- Only judge the pedestrian walking surface.
+
+Return ONLY valid JSON array with one object per check:
+{{
+  "segment_index": int,
+  "t": int,
+  "damage": boolean,
+  "severity": "low" | "medium" | "high" | null,
+  "damage_types": string[],
+  "confidence": number,
+  "notes": string
+}}
+
+Checks:
+{json.dumps(checks)}
+""".strip()
+
+    result = _bedrock_pegasus_invoke(verify_prompt, s3_uri=s3_uri)
+    raw_message = result.get("message", "")
+    rows = _extract_json_array(raw_message)
+
+    by_segment: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        seg_idx = _as_int(row.get("segment_index"), -1)
+        if seg_idx < 0:
+            continue
+        by_segment.setdefault(seg_idx, []).append(row)
+
+    kept: list[dict[str, Any]] = []
+    for idx, det in enumerate(detections):
+        segment_rows = by_segment.get(idx, [])
+        hits = 0
+        confs: list[float] = []
+        merged_types: set[str] = set(det.get("damage_types") or [])
+
+        for row in segment_rows:
+            damage = bool(row.get("damage"))
+            conf = _clamp_float(row.get("confidence"), 0.0, 0.0, 1.0)
+            if damage:
+                hits += 1
+                confs.append(conf)
+                types = row.get("damage_types")
+                if isinstance(types, list):
+                    merged_types |= {str(t).strip().lower() for t in types if str(t).strip()}
+
+        avg_conf = (sum(confs) / len(confs)) if confs else 0.0
+        if hits >= VERIFY_MIN_HITS and avg_conf >= VERIFY_MIN_AVG_CONF:
+            det["damage_types"] = sorted(merged_types)
+            det["confidence"] = max(float(det.get("confidence", 0.0)), avg_conf)
+            kept.append(det)
+
+    return kept
+
+
+def _load_overture_segments_for_csv(df: pd.DataFrame):
+    """
+    Loads Overture 'segment' features for a bbox around the GPS trace.
+    Returns (metric_gdf, sidewalk_mask) where geometries are projected to meters (EPSG:3857),
+    or (None, None) if overture/geopandas not available.
+    """
+    try:
+        import overturemaps  # type: ignore
+        import geopandas as gpd  # type: ignore
+    except Exception:
+        return None, None
+
+    if "lat" not in df.columns or "long" not in df.columns:
+        return None, None
+
+    # Use degree padding (fast and consistent with `aws_test.py`).
+    bbox_padding_deg = float(os.getenv("OVERTURE_BBOX_PADDING_DEG", "0.001"))
+    min_lon = float(df["long"].min()) - bbox_padding_deg
+    min_lat = float(df["lat"].min()) - bbox_padding_deg
+    max_lon = float(df["long"].max()) + bbox_padding_deg
+    max_lat = float(df["lat"].max()) + bbox_padding_deg
+    bbox = (min_lon, min_lat, max_lon, max_lat)
+
+    table = overturemaps.record_batch_reader("segment", bbox).read_all()
+    # geopandas versions vary; from_arrow is not always available
+    if hasattr(gpd.GeoDataFrame, "from_arrow"):
+        gdf = gpd.GeoDataFrame.from_arrow(table)
+    else:
+        pdf = table.to_pandas()
+        if "geometry" not in pdf.columns:
+            return None, None
+
+        geometry = pdf["geometry"]
+        # If geometry is WKB bytes, decode to shapely
+        try:
+            from shapely import from_wkb  # type: ignore[attr-defined]
+
+            if len(geometry) > 0 and isinstance(geometry.iloc[0], (bytes, bytearray, memoryview)):
+                geometry = geometry.apply(lambda v: None if v is None else from_wkb(bytes(v)))
+        except Exception:
+            try:
+                import shapely.wkb  # type: ignore
+
+                if len(geometry) > 0 and isinstance(geometry.iloc[0], (bytes, bytearray, memoryview)):
+                    geometry = geometry.apply(lambda v: None if v is None else shapely.wkb.loads(bytes(v)))
+            except Exception:
+                pass
+
+        gdf = gpd.GeoDataFrame(pdf, geometry=geometry)
+
+    if gdf.empty or "geometry" not in gdf.columns:
+        return None, None
+
+    # Overture geometries are lon/lat; ensure CRS then project to a meters CRS for accurate distances.
+    try:
+        gdf = gdf.set_crs("EPSG:4326", allow_override=True)
+        metric_gdf = gdf.to_crs("EPSG:3857")
+    except Exception:
+        return None, None
+
+    # Sidewalk-like classification: be resilient to schema variation by searching multiple fields.
+    sidewalk_keywords = ("sidewalk", "footway", "pedestrian", "path", "crossing", "steps")
+    text_fields = [col for col in ("subclass", "subtype", "class", "subclass_rules", "names") if col in metric_gdf.columns]
+    if not text_fields:
+        sidewalk_mask = pd.Series([False] * len(metric_gdf), index=metric_gdf.index)
+    else:
+        combined = metric_gdf[text_fields].astype(str).agg(" ".join, axis=1).str.lower()
+        sidewalk_mask = combined.apply(lambda value: any(keyword in value for keyword in sidewalk_keywords))
+
+    return metric_gdf, sidewalk_mask
+
+
+def _nearest_overture_segment(point_lon: float, point_lat: float, gdf, sidewalk_mask):
+    """
+    Returns (gers_id, subclass_value, distance_m) for best match.
+    Prefers sidewalk-like segments within OVERTURE_MAX_MATCH_M, else falls back to nearest segment overall.
+    """
+    try:
+        from shapely.geometry import Point  # type: ignore
+        from shapely.strtree import STRtree  # type: ignore
+    except Exception:
+        return None, None, None
+
+    if gdf is None or sidewalk_mask is None or getattr(gdf, "empty", True):
+        return None, None, None
+
+    try:
+        import geopandas as gpd  # type: ignore
+    except Exception:
+        return None, None, None
+
+    point_gdf = gpd.GeoSeries([Point(float(point_lon), float(point_lat))], crs="EPSG:4326").to_crs("EPSG:3857")
+    p = point_gdf.iloc[0]
+
+    geoms = list(gdf.geometry.values)
+    if not geoms:
+        return None, None, None
+
+    tree = STRtree(geoms)
+    geom_to_index = {id(geom): idx for idx, geom in zip(gdf.index, geoms)}
+
+    def _as_geoms(items) -> list[Any]:
+        normalized: list[Any] = []
+        for item in items:
+            if isinstance(item, (int,)) or str(type(item)).endswith("numpy.int64'>") or str(type(item)).endswith("numpy.int32'>"):
+                try:
+                    normalized.append(geoms[int(item)])
+                except Exception:
+                    continue
+            else:
+                normalized.append(item)
+        return normalized
+
+    def pick_best(geometry_list) -> tuple[Any, float] | tuple[None, float]:
+        best_idx = None
+        best_dist = float("inf")
+        for geom in geometry_list:
+            if not hasattr(geom, "distance"):
+                continue
+            dist = float(geom.distance(p))
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = geom_to_index.get(id(geom))
+        return best_idx, best_dist
+
+    max_m = float(os.getenv("OVERTURE_MAX_MATCH_M", "25"))
+
+    # 1) Prefer sidewalk-like segments within max_m.
+    sidewalk_candidates_geoms: list[Any] = []
+    try:
+        near_geoms = _as_geoms(list(tree.query(p.buffer(max_m))))
+        if near_geoms:
+            for geom in near_geoms:
+                idx = geom_to_index.get(id(geom))
+                if idx is None:
+                    continue
+                if bool(sidewalk_mask.loc[idx]):
+                    sidewalk_candidates_geoms.append(geom)
+    except Exception:
+        sidewalk_candidates_geoms = []
+
+    if sidewalk_candidates_geoms:
+        idx, distance_m = pick_best(sidewalk_candidates_geoms)
+    else:
+        # 2) Otherwise pick nearest overall.
+        idx = None
+        distance_m = float("inf")
+        if hasattr(tree, "nearest"):
+            try:
+                nearest_geom = tree.nearest(p)
+                nearest_geom = _as_geoms([nearest_geom])[0] if nearest_geom is not None else None
+                if nearest_geom is not None and hasattr(nearest_geom, "distance"):
+                    idx = geom_to_index.get(id(nearest_geom))
+                    if idx is not None:
+                        distance_m = float(nearest_geom.distance(p))
+            except Exception:
+                idx = None
+
+        if idx is None:
+            # Fallback: expand search until we get candidates.
+            for radius in (50.0, 100.0, 200.0, 500.0, 1000.0):
+                try:
+                    cand = _as_geoms(list(tree.query(p.buffer(radius))))
+                except Exception:
+                    cand = []
+                if not cand:
+                    continue
+                idx, distance_m = pick_best(cand)
+                if idx is not None:
+                    break
+
+    if idx is None:
+        return None, None, None
+
+    best = gdf.loc[idx]
+    gers_id = None
+    if "id" in getattr(best, "index", []) or (hasattr(best, "get") and best.get("id") is not None):
+        try:
+            gers_id = str(best.get("id"))
+        except Exception:
+            gers_id = None
+
+    subclass_value = None
+    for candidate in ("subclass", "subtype", "class"):
+        if hasattr(best, "get") and best.get(candidate) is not None:
+            subclass_value = str(best.get(candidate))
+            break
+
+    return gers_id, subclass_value, round(float(distance_m), 2)
 
 
 def fetch_json(url: str, *, params: dict[str, Any], headers: dict[str, str] | None = None) -> Any:
@@ -578,135 +1016,92 @@ def _run_analysis_job(run_id: str, video_path: str) -> None:
         s3.upload_file(video_path, BUCKET_NAME, s3_key)
         s3_uri = f"s3://{BUCKET_NAME}/{s3_key}"
 
-        # Step 2: Prompt
-        prompt = """
-You are a highly conservative civil engineering inspector analyzing a 1 FPS sidewalk video.
+        # Step 2: Detect segments (prompt + extract + merge + verify), aligned with `aws_test.py`.
+        result = _bedrock_pegasus_invoke(PEGASUS_PROMPT, s3_uri=s3_uri)
+        raw_message = result.get("message", "")
+        segments = _extract_json_array(raw_message)
+        segments = normalize_and_merge_detections(segments)
+        segments = [seg for seg in segments if float(seg.get("confidence") or 0.0) >= MIN_SEGMENT_CONFIDENCE]
 
-Your goal:
-Identify individual frames (seconds) where the sidewalk is CLEARLY damaged.
+        if VERIFY_SEGMENTS and segments:
+            segments = verify_segments(segments, s3_uri=s3_uri)
 
-STRICT RULES:
-- Only report a frame if you are confident there is real structural damage
-- If unsure, DO NOT include the frame
-- It is OK to return an empty list
-
-ONLY detect:
-- large cracks
-- potholes
-- missing chunks of sidewalk
-- major uneven slabs or trip hazards
-
-IGNORE:
-- shadows, lighting, blur
-- minor wear or texture
-- dirt or discoloration
-
-IMPORTANT:
-Treat EACH second independently. Do NOT group frames into ranges.
-
-Return ONLY valid JSON:
-
-[
-  {
-    "time": number,
-    "severity": "medium | high",
-    "description": "brief factual description"
-  }
-]
-"""
-
-        body = {
-            "inputPrompt": prompt,
-            "mediaSource": {
-                "s3Location": {
-                    "uri": s3_uri,
-                    "bucketOwner": BUCKET_OWNER
-                }
-            }
-        }
-
-        # Step 3: Run Pegasus analysis
-        response = bedrock.invoke_model(
-            modelId=MODEL_ID,
-            body=json.dumps(body)
-        )
-
-        raw_res = response["body"].read().decode("utf-8")
-        res_json = json.loads(raw_res)
-        msg = res_json.get("message", "[]")
-        detections_raw = json.loads(msg.replace("```json", "").replace("```", "").strip())
-
-        # Step 4: Normalize detections
-        detections = []
-        for det in detections_raw:
-            if "time" in det:
-                detections.append({
-                    "time": int(det["time"]),
-                    "severity": det.get("severity", ""),
-                    "description": det.get("description", "")
-                })
-            elif "start" in det and "end" in det:
-                start = int(det["start"])
-                end = int(det["end"])
-                for t in range(start, end + 1):
-                    detections.append({
-                        "time": t,
-                        "severity": det.get("severity", ""),
-                        "description": det.get("description", "")
-                    })
+        # Expand segments to per-frame issues (one best issue per frame).
+        severity_rank = {"low": 0, "medium": 1, "high": 2}
+        issues_by_frame: dict[int, dict[str, Any]] = {}
+        for seg in segments:
+            start = int(seg["start"])
+            end = int(seg["end"])
+            for t in range(start, end + 1):
+                if t < 0:
+                    continue
+                existing = issues_by_frame.get(t)
+                if existing is None:
+                    issues_by_frame[t] = seg
+                    continue
+                a = severity_rank.get(str(seg.get("severity")), 1)
+                b = severity_rank.get(str(existing.get("severity")), 1)
+                if a > b:
+                    issues_by_frame[t] = seg
+                    continue
+                if a == b and float(seg.get("confidence") or 0.0) > float(existing.get("confidence") or 0.0):
+                    issues_by_frame[t] = seg
 
         # Step 5: Load CSV
         csv_path = os.path.join("csvs", f"{sequence_id}.csv")
         df = pd.read_csv(csv_path)
 
-        # Step 6: Download Overture data
-        import overturemaps
-        import geopandas as gpd
-        from shapely.geometry import Point
-
-        bbox = (
-            df['long'].min() - 0.001,
-            df['lat'].min() - 0.001,
-            df['long'].max() + 0.001,
-            df['lat'].max() + 0.001
-        )
-
-        table = overturemaps.record_batch_reader("segment", bbox).read_all()
-        gdf = gpd.GeoDataFrame.from_arrow(table)
-
-        sidewalk_keys = {'sidewalk', 'footway', 'pedestrian', 'path'}
-
-        # Step 7: Build results
-        frame_issues = {i: [] for i in range(len(df))}
-        for det in detections:
-            t = det["time"]
-            if t < len(df):
-                desc = f"{det['severity']}: {det['description']}"
-                frame_issues[t].append(desc)
+        # Step 6: Load Overture segments (robust across GeoPandas/Shapely versions).
+        overture_gdf, overture_sidewalk_mask = _load_overture_segments_for_csv(df)
 
         rows = []
         for i in range(len(df)):
             row = df.iloc[i]
-            p = Point(row["long"], row["lat"])
+            # Prefer sidewalk-like segments within threshold, else nearest overall.
+            gers_id, gers_subclass, gers_distance_m = (None, None, None)
+            if overture_gdf is not None:
+                gers_id, gers_subclass, gers_distance_m = _nearest_overture_segment(
+                    point_lon=float(row["long"]),
+                    point_lat=float(row["lat"]),
+                    gdf=overture_gdf,
+                    sidewalk_mask=overture_sidewalk_mask,
+                )
 
-            gdf["dist"] = gdf.geometry.distance(p)
-            is_sidewalk = gdf["subclass"].isin(sidewalk_keys)
-            sidewalks = gdf[is_sidewalk & (gdf["dist"] < 0.00015)]
-
-            if not sidewalks.empty:
-                best = sidewalks.loc[sidewalks["dist"].idxmin()]
+            seg = issues_by_frame.get(i)
+            if seg is None:
+                has_issue = 0
+                severity = ""
+                confidence = ""
+                damage_types = ""
+                description = ""
+                issues = ""
             else:
-                best = gdf.loc[gdf["dist"].idxmin()]
-
-            issues = " | ".join(frame_issues[i]) if frame_issues[i] else ""
+                has_issue = 1
+                severity = str(seg.get("severity") or "")
+                conf_val = seg.get("confidence")
+                confidence = "" if conf_val is None else str(conf_val)
+                dt = seg.get("damage_types") or []
+                if isinstance(dt, list):
+                    damage_types = "|".join(str(x) for x in dt)
+                else:
+                    damage_types = str(dt)
+                description = str(seg.get("description") or "")
+                issues = f"{severity}: {description}".strip(": ")
 
             rows.append({
                 "frame": i,
                 "lat": row["lat"],
                 "lon": row["long"],
-                "gers_id": best["id"],
-                "segment_type": best.get("subclass", ""),
-                "issues": issues
+                "gers_id": gers_id or "",
+                "gers_subclass": gers_subclass or "",
+                "gers_distance_m": "" if gers_distance_m is None else gers_distance_m,
+                "segment_type": gers_subclass or "",
+                "has_issue": has_issue,
+                "severity": severity,
+                "confidence": confidence,
+                "damage_types": damage_types,
+                "description": description,
+                "issues": issues,
             })
 
         results = rows
